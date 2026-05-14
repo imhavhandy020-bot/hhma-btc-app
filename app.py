@@ -1,40 +1,27 @@
 import streamlit as st
 import pandas as pd
 import pandas_ta_classic as ta
-import requests
+import yfinance as yf
 import plotly.graph_objects as go
-from datetime import datetime
 
 st.set_page_config(page_title="HHMA Renko BTC", layout="wide")
 st.title("📊 Aplikasi Sinyal HHMA Renko 400 BTC")
 
 @st.cache_data(ttl=60)
 def get_crypto_data():
-    # Menggunakan API Publik Yahoo Finance (YFinance Ichart) yang bebas blokir dan tanpa API Key
-    h = "http" + "s://"
-    url = h + "yahoo.com"
+    # Mengunduh data Bitcoin harian (1d) sebanyak 500 bar terakhir lewat pustaka resmi Yahoo Finance
+    ticker = yf.Ticker("BTC-USD")
+    df = ticker.history(period="500d", interval="1d")
     
-    # Menambahkan Header palsu agar server mengenali aplikasi sebagai browser HP/Laptop biasa
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
-    response = requests.get(url, headers=headers).json()
-    
-    # Ekstraksi struktur data chart Yahoo Finance
-    result = response['chart']['result'][0]
-    timestamps = result['timestamp']
-    indicators = result['indicators']['quote'][0]
-    
-    df = pd.DataFrame({
-        'time': timestamps,
-        'open': indicators['open'],
-        'high': indicators['high'],
-        'low': indicators['low'],
-        'close': indicators['close']
+    # Merapikan struktur index tanggal menjadi kolom data biasa
+    df = df.reset_index()
+    df = df.rename(columns={
+        'Date': 'date',
+        'Open': 'open',
+        'High': 'high',
+        'Low': 'low',
+        'Close': 'close'
     })
-    
-    # Membersihkan data dari nilai kosong (NaN) dan merapikan format tanggal
-    df = df.dropna().reset_index(drop=True)
-    df['date'] = pd.to_datetime(df['time'], unit='s')
-    
     return df[['date', 'open', 'high', 'low', 'close']]
 
 try:
@@ -57,7 +44,7 @@ try:
             df.loc[i, 'sell_signal'] = True
             last_signal = -1
 
-    # Logika Pengunci Sinyal Mundur 1 Balok (offset=-1) sesuai skrip asli Anda
+    # Sinyal Mundur 1 Balok (offset=-1) sesuai logika asli TradingView Anda
     df['display_buy'] = df['buy_signal'].shift(-1)
     df['display_sell'] = df['sell_signal'].shift(-1)
 
