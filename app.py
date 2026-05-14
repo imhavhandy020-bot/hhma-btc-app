@@ -18,21 +18,25 @@ try:
 except:
     default_len = 20
 
-tf_options = ["1 Hari (Daily)", "4 Jam (4h)", "1 Jam (1h)"]
-src_options = ["Close (Penutupan)", "Open (Pembukaan)", "High (Tertinggi)", "Low (Terendah)"]
-tf_index = tf_options.index(default_tf) if default_tf in tf_options else 1
-src_index = src_options.index(default_src) if default_src in src_options else 0
-
-# Tambahan Kolom ke-4 untuk Mengatur Jumlah Tampilan Transaksi di Layar
+# Panel Menu Pengaturan
 col1, col2, col3, col4 = st.columns(4)
 with col1:
+    tf_options = ["1 Hari (Daily)", "4 Jam (4h)", "1 Jam (1h)"]
+    tf_index = tf_options.index(default_tf) if default_tf in tf_options else 1
     tf_pilihan = st.selectbox("Jangka Waktu (Timeframe):", options=tf_options, index=tf_index)
 with col2:
+    src_options = ["Close (Penutupan)", "Open (Pembukaan)", "High (Tertinggi)", "Low (Terendah)"]
+    src_index = src_options.index(default_src) if default_src in src_options else 0
     src_pilihan = st.selectbox("Sumber Data (Source):", options=src_options, index=src_index)
 with col3:
     length_hma = st.slider("Panjang HMA (Length):", min_value=2, max_value=50, value=default_len, step=1)
 with col4:
     jumlah_tampilan = st.slider("Jumlah Lilin di Layar:", min_value=10, max_value=300, value=100, step=10)
+
+# --- PANEL KALKULATOR MODAL (SIDEBAR) ---
+st.sidebar.header("💰 Pengaturan Kalkulator Finansial")
+modal_awal = st.sidebar.number_input("Modal Trading Anda ($ USD):", min_value=10, value=1000, step=100)
+leverage = st.sidebar.slider("Leverage (Multiplier):", min_value=1, max_value=50, value=1, step=1)
 
 st.query_params.update(tf=tf_pilihan, src=src_pilihan, len=str(length_hma))
 
@@ -98,7 +102,7 @@ try:
     df['display_buy'] = df['buy_signal'].shift(-1)
     df['display_sell'] = df['sell_signal'].shift(-1)
 
-    # --- MATRIKS BACKTEST PRESISI TINGGI ---
+    # --- MATRIKS BACKTEST + KALKULASI FINANSIAL DETIL ---
     trades = []
     active_trade_price = None
     target_tp = 1.045  
@@ -107,6 +111,10 @@ try:
     live_tp_price = None
     live_sl_price = None
     live_entry_price = None
+
+    # Tambah kolom di dataframe utama untuk melacak hasil per baris
+    df['trade_result_pct'] = None
+    df['trade_result_usd'] = None
 
     for i in range(len(df)):
         if df.loc[i, 'buy_signal']:
@@ -119,40 +127,58 @@ try:
             low_match = df.loc[i, 'low'] <= (active_trade_price * target_sl)
             
             if high_match:
-                trades.append(4.5)
+                hasil_pct = 4.5 * leverage
+                trades.append(hasil_pct)
+                df.loc[i, 'trade_result_pct'] = hasil_pct
+                df.loc[i, 'trade_result_usd'] = (hasil_pct / 100) * modal_awal
                 active_trade_price = None
             elif low_match or df.loc[i, 'sell_signal']:
                 loss_pct = ((df.loc[i, 'close'] - active_trade_price) / active_trade_price) * 100
-                trades.append(max(loss_pct, -1.5))
+                hasil_pct = max(loss_pct, -1.5) * leverage
+                trades.append(hasil_pct)
+                df.loc[i, 'trade_result_pct'] = hasil_pct
+                df.loc[i, 'trade_result_usd'] = (hasil_pct / 100) * modal_awal
                 active_trade_price = None
             
     win_rate = 0
+    total_profit_pct = sum(trades)
+    estimasi_profit_usd = (total_profit_pct / 100) * modal_awal
+
     if len(trades) > 0:
         wins = len([t for t in trades if t > 0])
         win_rate = (wins / len(trades)) * 100
 
-    latest_row = df.iloc[-2]
     current_price = df.iloc[-1]['close']
     
-    m1, m2 = st.columns(2)
+    # --- PAPAN METRIK UTAMA DENGAN PROFIT USD ---
+    m1, m2, m3 = st.columns(3)
     with m1:
         st.metric(label=f"Harga BTC Live ({tf_pilihan})", value=f"${current_price:,.2f}")
     with m2:
-        st.metric(label="Persentase Akurasi Sistem Maksimal", value=f"{win_rate:.1f}%", delta=f"{len(trades)} Sinyal Lolos Sensor")
+        st.metric(label="Akurasi & Sinyal Lolos Sensor", value=f"{win_rate:.1f}%", delta=f"{len(trades)} Transaksi Selesai")
+    with m3:
+        st.metric(label=f"Estimasi Keuntungan Bersih ({leverage}x)", value=f"${estimasi_profit_usd:+,.2f}", delta=f"{total_profit_pct:+.1f}% Pertumbuhan")
 
-    is_latest_buy = df.iloc[-1]['display_buy'] or df.iloc[-2]['buy_signal']
-    is_latest_sell = df.iloc[-1]['display_sell'] or df.iloc[-2]['sell_signal']
-
-    if is_latest_buy:
-        st.success(f"🟢 **SINYAL TERBARU: BUY** pada harga ${latest_row['close']:,.2f} (Konfirmasi Tren Institusional)")
-        putar_alarm("BUY")  
-    elif is_latest_sell:
-        st.error(f"🔴 **SINYAL TERBARU: SELL** pada harga ${latest_row['close']:,.2f} (Konfirmasi Tren Institusional)")
-        putar_alarm("SELL")  
+    # --- LOGIKA PEMICU SINKRONISASI TOTAL ---
+    df_signals_clean = df[(df['buy_signal'] == True) | (df['sell_signal'] == True) | (df['trade_result_pct'].notna())]
+    
+    # Menampilkan info status transaksi berjalan saat ini di layar
+    df_actual_signals = df[(df['buy_signal'] == True) | (df['sell_signal'] == True)]
+    if len(df_actual_signals) > 0:
+        sinyal_terakhir = df_actual_signals.iloc[-1]
+        waktu_terakhir = sinyal_terakhir['date'].strftime('%Y-%m-%d %H:%M')
+        harga_eksekusi = sinyal_terakhir['close']
+        
+        if sinyal_terakhir['buy_signal']:
+            st.success(f"🟢 **SINYAL VALID AKTIF: BUY** pada harga ${harga_eksekusi:,.2f} (Terdeteksi sejak lilin {waktu_terakhir})")
+            putar_alarm("BUY")
+        elif sinyal_terakhir['sell_signal']:
+            st.error(f"🔴 **SINYAL VALID AKTIF: SELL** pada harga ${harga_eksekusi:,.2f} (Terdeteksi sejak lilin {waktu_terakhir})")
+            putar_alarm("SELL")
     else:
-        st.info("⚪ Status Saat Ini: Hold Tren (Menunggu Sinyal Berkekuatan Tinggi Luar Biasa)")
+        st.info("⚪ Status Saat Ini: Hold Tren (Belum ada sinyal valid yang lolos sensor)")
 
-    # --- PEMOTONGAN DATA UNTUK FOKUS BEBERAPA TRANSAKSI TERAKHIR ---
+    # --- PEMOTONGAN DATA UNTUK GRAPH ---
     df_grafik = df.tail(jumlah_tampilan).reset_index(drop=True)
 
     # --- GRAFIK SEGMEN BERSIH TERPISAH ---
@@ -171,8 +197,7 @@ try:
     sell_plots = df_grafik[df_grafik['display_sell'] == True]
     fig.add_trace(go.Scatter(x=sell_plots['date'], y=sell_plots['hma'], mode='markers', marker=dict(symbol='triangle-down', size=16, color='red'), name="Sinyal SELL Maksimal"), row=1, col=1)
 
-    # Menampilkan garis target TP/SL hanya jika harga entri masuk ke dalam rentang lilin yang dipotong
-    if live_entry_price is not None and live_entry_price >= df_grafik['low'].min() and live_entry_price <= df_grafik['high'].max():
+    if live_entry_price is not None:
         fig.add_hline(y=live_entry_price, line_dash="dash", line_color="#3498db", line_width=1.5, 
                       annotation_text=f"Entry: ${live_entry_price:,.2f}", annotation_position="top right", row=1, col=1)
         fig.add_hline(y=live_tp_price, line_dash="dash", line_color="#2ecc71", line_width=2, 
@@ -186,15 +211,19 @@ try:
     fig.update_layout(xaxis_rangeslider_visible=False, height=650, template="plotly_dark", margin=dict(t=10, b=10))
     st.plotly_chart(fig, use_container_width=True)
 
-    # --- TABEL HISTORY TRANSAKSI (DIBATASI HANYA 5 TRANSAKSI TERAKHIR) ---
-    st.subheader("📋 Riwayat Sinyal Khusus Level Maksimal (5 Terakhir)")
-    df_signals = df[(df['buy_signal'] == True) | (df['sell_signal'] == True)].copy()
+    # --- TABEL HISTORY TRANSAKSI DENGAN DETIL HASIL PROFIT/LOSS ---
+    st.subheader("📋 Riwayat Sinyal & Laporan Hasil Transaksi (5 Terakhir)")
+    df_signals = df_actual_signals.copy()
     df_signals['Jenis Sinyal'] = df_signals['buy_signal'].apply(lambda x: "🟢 BUY" if x else "🔴 SELL")
     df_signals['Waktu Sinyal'] = df_signals['date'].dt.strftime('%Y-%m-%d %H:%M')
     df_signals = df_signals.rename(columns={'close': 'Harga Eksekusi (USD)'})
     
+    # Mencari titik exit untuk menampilkan hasil trading di baris transaksi yang sama
+    df_signals['Hasil (%)'] = df['trade_result_pct'].shift(-1).apply(lambda x: f"{x:+.1f}%" if pd.notna(x) else "Berjalan (Running)")
+    df_signals['Estimasi Hasil (USD)'] = df['trade_result_usd'].shift(-1).apply(lambda x: f"${x:+,.2f}" if pd.notna(x) else "Menunggu Target")
+    
     st.dataframe(
-        df_signals[['Waktu Sinyal', 'Jenis Sinyal', 'Harga Eksekusi (USD)']].sort_index(ascending=False).head(5),
+        df_signals[['Waktu Sinyal', 'Jenis Sinyal', 'Harga Eksekusi (USD)', 'Hasil (%)', 'Estimasi Hasil (USD)']].sort_index(ascending=False).head(5),
         use_container_width=True, hide_index=True
     )
 
