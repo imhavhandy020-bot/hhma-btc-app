@@ -102,9 +102,9 @@ try:
     df['display_buy'] = df['buy_signal'].shift(-1)
     df['display_sell'] = df['sell_signal'].shift(-1)
 
-    # --- MATRIKS BACKTEST + KALKULASI FINANSIAL DETIL ---
-    trades = []
-    active_trade_price = None
+    # --- MATRIKS BACKTEST PRESISI UTAMA ---
+    trades_list = []  # Menyimpan dictionary detil transaksi untuk tabel riwayat resmi
+    active_trade = None
     target_tp = 1.045  
     target_sl = 0.985  
 
@@ -112,57 +112,77 @@ try:
     live_sl_price = None
     live_entry_price = None
 
-    # Tambah kolom di dataframe utama untuk melacak hasil per baris
-    df['trade_result_pct'] = None
-    df['trade_result_usd'] = None
-
     for i in range(len(df)):
+        # Kondisi 1: Menemukan Sinyal Entry BUY Baru
         if df.loc[i, 'buy_signal']:
-            active_trade_price = df.loc[i, 'close']
-            live_entry_price = active_trade_price
-            live_tp_price = active_trade_price * target_tp
-            live_sl_price = active_trade_price * target_sl
-        elif active_trade_price is not None:
-            high_match = df.loc[i, 'high'] >= (active_trade_price * target_tp)
-            low_match = df.loc[i, 'low'] <= (active_trade_price * target_sl)
+            # Jika ada trade menggantung yang belum closing, tutup paksa sebelum buka yang baru
+            if active_trade is not None:
+                loss_pct = ((df.loc[i, 'close'] - active_trade['entry_price']) / active_trade['entry_price']) * 100
+                final_pct = max(loss_pct, -1.5) * leverage
+                active_trade['status'] = "Selesai (Cut Sinyal Kebalikan)"
+                active_trade['profit_pct'] = final_pct
+                active_trade['profit_usd'] = (final_pct / 100) * modal_awal
+                trades_list.append(active_trade)
+
+            active_trade = {
+                'waktu_entry': df.loc[i, 'date'].strftime('%Y-%m-%d %H:%M'),
+                'jenis': "🟢 BUY",
+                'entry_price': df.loc[i, 'close'],
+                'status': "Berjalan (Running)",
+                'profit_pct': 0.0,
+                'profit_usd': 0.0
+            }
+            live_entry_price = df.loc[i, 'close']
+            live_tp_price = live_entry_price * target_tp
+            live_sl_price = live_entry_price * target_sl
+
+        # Kondisi 2: Melacak Posisi yang Sedang Terbuka Aktif
+        elif active_trade is not None:
+            high_match = df.loc[i, 'high'] >= (active_trade['entry_price'] * target_tp)
+            low_match = df.loc[i, 'low'] <= (active_trade['entry_price'] * target_sl)
             
             if high_match:
-                hasil_pct = 4.5 * leverage
-                trades.append(hasil_pct)
-                df.loc[i, 'trade_result_pct'] = hasil_pct
-                df.loc[i, 'trade_result_usd'] = (hasil_pct / 100) * modal_awal
-                active_trade_price = None
+                final_pct = 4.5 * leverage
+                active_trade['status'] = "🎯 Take Profit"
+                active_trade['profit_pct'] = final_pct
+                active_trade['profit_usd'] = (final_pct / 100) * modal_awal
+                trades_list.append(active_trade)
+                active_trade = None
             elif low_match or df.loc[i, 'sell_signal']:
-                loss_pct = ((df.loc[i, 'close'] - active_trade_price) / active_trade_price) * 100
-                hasil_pct = max(loss_pct, -1.5) * leverage
-                trades.append(hasil_pct)
-                df.loc[i, 'trade_result_pct'] = hasil_pct
-                df.loc[i, 'trade_result_usd'] = (hasil_pct / 100) * modal_awal
-                active_trade_price = None
-            
+                loss_pct = ((df.loc[i, 'close'] - active_trade['entry_price']) / active_trade['entry_price']) * 100
+                final_pct = max(loss_pct, -1.5) * leverage
+                active_trade['status'] = "🛑 Stop Loss / Exit"
+                active_trade['profit_pct'] = final_pct
+                active_trade['profit_usd'] = (final_pct / 100) * modal_awal
+                trades_list.append(active_trade)
+                active_trade = None
+
+    # Jika trade paling akhir saat ini statusnya masih running, masukkan juga ke list tabel
+    if active_trade is not None:
+        trades_list.append(active_trade)
+
+    # Rekap data untuk papan skor metrik atas
+    total_trades_done = [t for t in trades_list if t['status'] != "Berjalan (Running)"]
     win_rate = 0
-    total_profit_pct = sum(trades)
+    total_profit_pct = sum([t['profit_pct'] for t in total_trades_done])
     estimasi_profit_usd = (total_profit_pct / 100) * modal_awal
 
-    if len(trades) > 0:
-        wins = len([t for t in trades if t > 0])
-        win_rate = (wins / len(trades)) * 100
+    if len(total_trades_done) > 0:
+        wins = len([t for t in total_trades_done if t['profit_pct'] > 0])
+        win_rate = (wins / len(total_trades_done)) * 100
 
     current_price = df.iloc[-1]['close']
     
-    # --- PAPAN METRIK UTAMA DENGAN PROFIT USD ---
+    # --- PAPAN METRIK UTAMA ---
     m1, m2, m3 = st.columns(3)
     with m1:
         st.metric(label=f"Harga BTC Live ({tf_pilihan})", value=f"${current_price:,.2f}")
     with m2:
-        st.metric(label="Akurasi & Sinyal Lolos Sensor", value=f"{win_rate:.1f}%", delta=f"{len(trades)} Transaksi Selesai")
+        st.metric(label="Akurasi & Sinyal Lolos Sensor", value=f"{win_rate:.1f}%", delta=f"{len(total_trades_done)} Transaksi Selesai")
     with m3:
         st.metric(label=f"Estimasi Keuntungan Bersih ({leverage}x)", value=f"${estimasi_profit_usd:+,.2f}", delta=f"{total_profit_pct:+.1f}% Pertumbuhan")
 
-    # --- LOGIKA PEMICU SINKRONISASI TOTAL ---
-    df_signals_clean = df[(df['buy_signal'] == True) | (df['sell_signal'] == True) | (df['trade_result_pct'].notna())]
-    
-    # Menampilkan info status transaksi berjalan saat ini di layar
+    # --- LOGIKA PEMICU KOTAK NOTIFIKASI UTAMA ---
     df_actual_signals = df[(df['buy_signal'] == True) | (df['sell_signal'] == True)]
     if len(df_actual_signals) > 0:
         sinyal_terakhir = df_actual_signals.iloc[-1]
@@ -211,21 +231,27 @@ try:
     fig.update_layout(xaxis_rangeslider_visible=False, height=650, template="plotly_dark", margin=dict(t=10, b=10))
     st.plotly_chart(fig, use_container_width=True)
 
-    # --- TABEL HISTORY TRANSAKSI DENGAN DETIL HASIL PROFIT/LOSS ---
-    st.subheader("📋 Riwayat Sinyal & Laporan Hasil Transaksi (5 Terakhir)")
-    df_signals = df_actual_signals.copy()
-    df_signals['Jenis Sinyal'] = df_signals['buy_signal'].apply(lambda x: "🟢 BUY" if x else "🔴 SELL")
-    df_signals['Waktu Sinyal'] = df_signals['date'].dt.strftime('%Y-%m-%d %H:%M')
-    df_signals = df_signals.rename(columns={'close': 'Harga Eksekusi (USD)'})
-    
-    # Mencari titik exit untuk menampilkan hasil trading di baris transaksi yang sama
-    df_signals['Hasil (%)'] = df['trade_result_pct'].shift(-1).apply(lambda x: f"{x:+.1f}%" if pd.notna(x) else "Berjalan (Running)")
-    df_signals['Estimasi Hasil (USD)'] = df['trade_result_usd'].shift(-1).apply(lambda x: f"${x:+,.2f}" if pd.notna(x) else "Menunggu Target")
-    
-    st.dataframe(
-        df_signals[['Waktu Sinyal', 'Jenis Sinyal', 'Harga Eksekusi (USD)', 'Hasil (%)', 'Estimasi Hasil (USD)']].sort_index(ascending=False).head(5),
-        use_container_width=True, hide_index=True
-    )
+    # --- TABEL HISTORY TRANSAKSI RESMI SINKRON & REAL-TIME ---
+    st.subheader("📋 Laporan Hasil Analisis Struktur Transaksi Selesai")
+    if len(trades_list) > 0:
+        df_tabel_final = pd.DataFrame(trades_list)
+        # Mengubah format penulisan angka agar scannable dan rapi
+        df_tabel_final['Harga Entry'] = df_tabel_final['entry_price'].apply(lambda x: f"${x:,.2f}")
+        df_tabel_final['Hasil %'] = df_tabel_final.apply(lambda r: f"{r['profit_pct']:+.1f}%" if r['status'] != "Berjalan (Running)" else "Menghitung...", axis=1)
+        df_tabel_final['Hasil USD'] = df_tabel_final.apply(lambda r: f"${r['profit_usd']:+,.2f}" if r['status'] != "Berjalan (Running)" else "Running", axis=1)
+        
+        df_tabel_final = df_tabel_final.rename(columns={
+            'waktu_entry': 'Waktu Open Posisi',
+            'jenis': 'Sinyal',
+            'status': 'Status Akhir Kondisi'
+        })
+        
+        st.dataframe(
+            df_tabel_final[['Waktu Open Posisi', 'Sinyal', 'Harga Entry', 'Status Akhir Kondisi', 'Hasil %', 'Hasil USD']].iloc[::-1].head(5),
+            use_container_width=True, hide_index=True
+        )
+    else:
+        st.info("Belum ada riwayat transaksi yang tersimpan.")
 
 except Exception as e:
     st.error(f"Gagal memuat data. Error: {e}")
