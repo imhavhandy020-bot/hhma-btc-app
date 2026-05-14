@@ -5,8 +5,8 @@ import yfinance as yf
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
-st.set_page_config(page_title="HHMA Renko BTC Pro", layout="wide")
-st.title("🚀 Aplikasi Trading Pro - HHMA Renko 400 BTC")
+st.set_page_config(page_title="HHMA Renko BTC Ultra", layout="wide")
+st.title("🚀 Aplikasi Trading Ultra - HHMA Renko + Filter RSI")
 
 # --- SISTEM PENGUNCI SETELAN ANTI REFRESH ---
 query_params = st.query_params
@@ -53,26 +53,33 @@ try:
     df['hma'] = ta.hma(df[src_aktif], length=length_hma)
     df['rsi'] = ta.rsi(df['close'], length=14)
     
+    # Logika dasar perubahan arah HHMA
     df['is_green'] = df['hma'] >= df['hma'].shift(1)
     df['raw_buy'] = df['is_green'] & (~df['is_green'].shift(1).fillna(False))
     df['raw_sell'] = (~df['is_green']) & df['is_green'].shift(1).fillna(False)
+
+    # --- PENINGKATAN AKURASI: FILTER KONFIRMASI TREND DENGAN RSI ---
+    df['filtered_buy'] = df['raw_buy'] & (df['rsi'] < 65)
+    df['filtered_sell'] = df['raw_sell'] & (df['rsi'] > 35)
 
     df['buy_signal'] = False
     df['sell_signal'] = False
     last_signal = 0
 
+    # Sistem pengunci status agar sinyal bergantian secara akurat
     for i in range(len(df)):
-        if df.loc[i, 'raw_buy'] and last_signal != 1:
+        if df.loc[i, 'filtered_buy'] and last_signal != 1:
             df.loc[i, 'buy_signal'] = True
             last_signal = 1
-        elif df.loc[i, 'raw_sell'] and last_signal != -1:
+        elif df.loc[i, 'filtered_sell'] and last_signal != -1:
             df.loc[i, 'sell_signal'] = True
             last_signal = -1
 
+    # Sinyal Mundur 1 Balok (offset=-1) untuk visualisasi di grafik
     df['display_buy'] = df['buy_signal'].shift(-1)
     df['display_sell'] = df['sell_signal'].shift(-1)
 
-    # --- STATISTIK AKURASI BACKTEST ---
+    # --- HITUNG STATISTIK AKURASI WIN RATE BARU ---
     trades = []
     active_trade = None
     for i in range(len(df)):
@@ -88,7 +95,7 @@ try:
         wins = len([t for t in trades if t > 0])
         win_rate = (wins / len(trades)) * 100
 
-    # Tampilan Informasi Kartu Atas
+    # Tampilan Papan Informasi Atas
     latest_row = df.iloc[-2]
     current_price = df.iloc[-1]['close']
     
@@ -96,41 +103,48 @@ try:
     with m1:
         st.metric(label=f"Harga BTC Live ({tf_pilihan})", value=f"${current_price:,.2f}")
     with m2:
-        st.metric(label="Win Rate Akurasi Strategi", value=f"{win_rate:.1f}%", delta=f"{len(trades)} Total Trade")
+        st.metric(label="Win Rate Akurasi Setelah Difilter", value=f"{win_rate:.1f}%", delta=f"{len(trades)} Sinyal Valid")
 
     if df.iloc[-1]['display_buy'] or df.iloc[-2]['buy_signal']:
-        st.success(f"🟢 **SINYAL TERBARU: BUY** pada harga ${latest_row['close']:,.2f}")
+        st.success(f"🟢 **SINYAL TERBARU: BUY** pada harga ${latest_row['close']:,.2f} (Tren Akurat)")
     elif df.iloc[-1]['display_sell'] or df.iloc[-2]['sell_signal']:
-        st.error(f"🔴 **SINYAL TERBARU: SELL** pada harga ${latest_row['close']:,.2f}")
+        st.error(f"🔴 **SINYAL TERBARU: SELL** pada harga ${latest_row['close']:,.2f} (Tren Akurat)")
     else:
-        st.info("⚪ Status Saat Ini: Mengikuti Tren Berjalan (Hold)")
+        st.info("⚪ Status Saat Ini: Mengikuti Tren Berjalan (Hold / Menunggu Konfirmasi)")
 
-    # --- GRAFIK MULTI SUBPLOT (CANDLESTICK + RSI) ---
-    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.7, 0.3], vertical_spacing=0.05)
+    # --- GRAFIK PANDUAN BERSIH (TERPISAH / TIDAK BERTUMPUK) ---
+    # Membuat 2 baris grafik terpisah: Atas untuk Candlestick, Bawah untuk RSI
+    fig = make_subplots(
+        rows=2, cols=1, 
+        shared_xaxes=True, 
+        row_heights=[0.7, 0.3], 
+        vertical_spacing=0.08
+    )
     
-    # Subplot 1: Candlestick & HHMA
-    fig.add_trace(go.Candlestick(x=df['date'], open=df['open'], high=df['high'], low=df['low'], close=df['close'], name="BTC/USD", opacity=0.3), row=1, col=1)
+    # Panel Atas: Candlestick Utama & Garis HHMA
+    fig.add_trace(go.Candlestick(x=df['date'], open=df['open'], high=df['high'], low=df['low'], close=df['close'], name="BTC/USD", opacity=0.4), row=1, col=1)
     
     for i in range(1, len(df)):
         color = "green" if df.loc[i, 'is_green'] else "red"
         fig.add_trace(go.Scatter(x=df['date'].iloc[i-1:i+1], y=df['hma'].iloc[i-1:i+1], mode='lines', line=dict(color=color, width=3), showlegend=False), row=1, col=1)
 
+    # Plot Panah Sinyal Akurat di Panel Atas
     buy_plots = df[df['display_buy'] == True]
-    fig.add_trace(go.Scatter(x=buy_plots['date'], y=buy_plots['hma'], mode='markers', marker=dict(symbol='triangle-up', size=15, color='green'), name="Sinyal BUY"), row=1, col=1)
+    fig.add_trace(go.Scatter(x=buy_plots['date'], y=buy_plots['hma'], mode='markers', marker=dict(symbol='triangle-up', size=16, color='green'), name="Sinyal BUY Valid"), row=1, col=1)
 
     sell_plots = df[df['display_sell'] == True]
-    fig.add_trace(go.Scatter(x=sell_plots['date'], y=sell_plots['hma'], mode='markers', marker=dict(symbol='triangle-down', size=15, color='red'), name="Sinyal SELL"), row=1, col=1)
+    fig.add_trace(go.Scatter(x=sell_plots['date'], y=sell_plots['hma'], mode='markers', marker=dict(symbol='triangle-down', size=16, color='red'), name="Sinyal SELL Valid"), row=1, col=1)
 
-    # Subplot 2: Garis RSI
-    fig.add_trace(go.Scatter(x=df['date'], y=df['rsi'], mode='lines', line=dict(color='orange', width=2), name="RSI (14)"), row=2, col=1)
-    fig.add_hline(y=70, line_dash="dash", line_color="red", row=2, col=1)
-    fig.add_hline(y=30, line_dash="dash", line_color="green", row=2, col=1)
+    # Panel Bawah: Garis Indikator RSI Terpisah
+    fig.add_trace(go.Scatter(x=df['date'], y=df['rsi'], mode='lines', line=dict(color='orange', width=2), name="RSI (Filter)"), row=2, col=1)
+    fig.add_hline(y=65, line_dash="dash", line_color="red", row=2, col=1)
+    fig.add_hline(y=35, line_dash="dash", line_color="green", row=2, col=1)
 
-    fig.update_layout(xaxis_rangeslider_visible=False, height=650, template="plotly_dark", margin=dict(t=20, b=20))
+    fig.update_layout(xaxis_rangeslider_visible=False, height=650, template="plotly_dark", margin=dict(t=10, b=10))
     st.plotly_chart(fig, use_container_width=True)
 
-    # --- TABEL RIWAYAT SINYAL TRADING ---
-    st.subheader("📋 Riwayat Sinyal Trading Terakhir")
+    # --- TABEL RIWAYAT TRANSAKSI AKTUAL ---
+    st.subheader("📋 Riwayat Sinyal Trading Hasil Filter")
     df_signals = df[(df['buy_signal'] == True) | (df['sell_signal'] == True)].copy()
     df_signals['Jenis Sinyal'] = df_signals['buy_signal'].apply(lambda x: "🟢 BUY" if x else "🔴 SELL")
     df_signals['Waktu Sinyal'] = df_signals['date'].dt.strftime('%Y-%m-%d %H:%M')
