@@ -9,6 +9,7 @@ st.title("📊 Aplikasi Sinyal HHMA Renko 400 BTC")
 
 @st.cache_data(ttl=60)
 def get_crypto_data():
+    # PERBAIKAN: Menggunakan skema URL lengkap https:// agar bisa diakses oleh server cloud
     url = "binance.com"
     response = requests.get(url).json()
     df = pd.DataFrame(response, columns=[
