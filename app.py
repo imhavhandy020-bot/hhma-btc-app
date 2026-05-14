@@ -4,16 +4,17 @@ import pandas_ta_classic as ta
 import yfinance as yf
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+import streamlit.components.v1 as components  # Diperlukan untuk injeksi audio JavaScript
 
 st.set_page_config(page_title="HHMA Renko BTC Max Pro", layout="wide")
 st.title("🛡️ HHMA Renko 400 BTC - Algoritma Filter Berlapis (Maksimal Akurasi)")
 
 # --- SISTEM PENGUNCI SETELAN ANTI REFRESH ---
 query_params = st.query_params
-default_tf = query_params.get("tf", "4 Jam (4h)")  # Zona paling optimal untuk akurasi ekstrem
+default_tf = query_params.get("tf", "4 Jam (4h)")  
 default_src = query_params.get("src", "Close (Penutupan)")
 try:
-    default_len = int(query_params.get("len", "20"))  # Mengunci ke panjang 20 untuk penyaringan kurva superior
+    default_len = int(query_params.get("len", "20"))  
 except:
     default_len = 20
 
@@ -46,26 +47,40 @@ def get_crypto_data(p, i):
     df = df.rename(columns={'Date': 'date', 'Datetime': 'date', 'Open': 'open', 'High': 'high', 'Low': 'low', 'Close': 'close', 'Volume': 'volume'})
     return df[['date', 'open', 'high', 'low', 'close', 'volume']]
 
+# --- FUNGSI ALARM AUDIO (JAVASCRIPT BROWSER) ---
+def putar_alarm(jenis_sinyal):
+    # Menggunakan audio open-source yang andal agar langsung berbunyi di browser
+    if jenis_sinyal == "BUY":
+        audio_url = "google.com"
+    else:
+        audio_url = "google.com"
+        
+    js_code = f"""
+    <script>
+        var audio = new Audio('{audio_url}');
+        audio.play().catch(function(error) {{
+            console.log("Browser memblokir autoplay sebelum interaksi pengguna: ", error);
+        }});
+    </script>
+    """
+    components.html(js_code, height=0, width=0)
+
 try:
     df = get_crypto_data(period_map[tf_pilihan], interval_map[tf_pilihan])
     
     # --- PENGHITUNGAN ALGORITMA FILTER BERLAPIS ---
     df['hma'] = ta.hma(df[src_aktif], length=length_hma)
-    df['ema_200'] = ta.ema(df['close'], length=200)  # Filter 1: Tren Institusi Makro
-    df['rsi'] = ta.rsi(df['close'], length=14)        # Filter 2: Momentum Sinyal
-    df['atr'] = ta.atr(df['high'], df['low'], df['close'], length=14) # Filter 3: Volatilitas Pasar
+    df['ema_200'] = ta.ema(df['close'], length=200)  
+    df['rsi'] = ta.rsi(df['close'], length=14)        
+    df['atr'] = ta.atr(df['high'], df['low'], df['close'], length=14) 
     df['atr_ma'] = ta.sma(df['atr'], length=20)
     
-    # Logika dasar perubahan kemiringan HHMA
     df['is_green'] = df['hma'] >= df['hma'].shift(1)
     df['raw_buy'] = df['is_green'] & (~df['is_green'].shift(1).fillna(False))
     df['raw_sell'] = (~df['is_green']) & df['is_green'].shift(1).fillna(False)
 
     # --- EKSEKUSI FILTER LEVEL TINGGI (ULTRA SHIELD) ---
-    # Sinyal BUY wajib: Di atas EMA 200 (Bullish), RSI Sehat (<60), Pasar Bergerak Aktif (ATR > ATR MA)
     df['high_accuracy_buy'] = df['raw_buy'] & (df['close'] > df['ema_200']) & (df['rsi'] < 60) & (df['atr'] > df['atr_ma'])
-    
-    # Sinyal SELL wajib: Di bawah EMA 200 (Bearish), RSI Jenuh (>40), Pasar Bergerak Aktif (ATR > ATR MA)
     df['high_accuracy_sell'] = df['raw_sell'] & (df['close'] < df['ema_200']) & (df['rsi'] > 40) & (df['atr'] > df['atr_ma'])
 
     df['buy_signal'] = False
@@ -86,8 +101,8 @@ try:
     # --- MATRIKS BACKTEST PRESISI TINGGI ---
     trades = []
     active_trade_price = None
-    target_tp = 1.045  # Mengunci keuntungan optimal sebesar +4.5%
-    target_sl = 0.985  # Membatasi risiko kerugian ketat maksimal -1.5%
+    target_tp = 1.045  
+    target_sl = 0.985  
 
     for i in range(len(df)):
         if df.loc[i, 'buy_signal']:
@@ -119,17 +134,22 @@ try:
     with m2:
         st.metric(label="Persentase Akurasi Sistem Maksimal", value=f"{win_rate:.1f}%", delta=f"{len(trades)} Sinyal Lolos Sensor")
 
-    if df.iloc[-1]['display_buy'] or df.iloc[-2]['buy_signal']:
+    # --- LOGIKA PEMICU ALARM REAL-TIME ---
+    is_latest_buy = df.iloc[-1]['display_buy'] or df.iloc[-2]['buy_signal']
+    is_latest_sell = df.iloc[-1]['display_sell'] or df.iloc[-2]['sell_signal']
+
+    if is_latest_buy:
         st.success(f"🟢 **SINYAL TERBARU: BUY** pada harga ${latest_row['close']:,.2f} (Konfirmasi Tren Institusional)")
-    elif df.iloc[-1]['display_sell'] or df.iloc[-2]['sell_signal']:
+        putar_alarm("BUY")  # <--- Memicu Alarm BUY
+    elif is_latest_sell:
         st.error(f"🔴 **SINYAL TERBARU: SELL** pada harga ${latest_row['close']:,.2f} (Konfirmasi Tren Institusional)")
+        putar_alarm("SELL")  # <--- Memicu Alarm SELL
     else:
         st.info("⚪ Status Saat Ini: Hold Tren (Menunggu Sinyal Berkekuatan Tinggi Luar Biasa)")
 
     # --- GRAFIK SEGMEN BERSIH TERPISAH ---
     fig = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.75, 0.25], vertical_spacing=0.06)
     
-    # Atas: Candlestick, Garis HHMA & Filter Utama EMA 200
     fig.add_trace(go.Candlestick(x=df['date'], open=df['open'], high=df['high'], low=df['low'], close=df['close'], name="BTC/USD", opacity=0.3), row=1, col=1)
     fig.add_trace(go.Scatter(x=df['date'], y=df['ema_200'], mode='lines', line=dict(color='white', width=1.5, dash='dot'), name="EMA 200 (Tren Makro)"), row=1, col=1)
     
@@ -143,7 +163,6 @@ try:
     sell_plots = df[df['display_sell'] == True]
     fig.add_trace(go.Scatter(x=sell_plots['date'], y=sell_plots['hma'], mode='markers', marker=dict(symbol='triangle-down', size=16, color='red'), name="Sinyal SELL Maksimal"), row=1, col=1)
 
-    # Bawah: Indikator Volatilitas ATR 
     fig.add_trace(go.Scatter(x=df['date'], y=df['atr'], mode='lines', line=dict(color='magenta', width=2), name="ATR Volatilitas"), row=2, col=1)
     fig.add_trace(go.Scatter(x=df['date'], y=df['atr_ma'], mode='lines', line=dict(color='yellow', width=1), name="Rata-rata Volatilitas"), row=2, col=1)
 
