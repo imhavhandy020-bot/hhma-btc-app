@@ -9,16 +9,17 @@ st.title("📊 Aplikasi Sinyal HHMA Renko 400 BTC")
 
 @st.cache_data(ttl=60)
 def get_crypto_data():
-    # PERBAIKAN NYATA: Menambahkan skema https:// secara lengkap agar lolos sensor validasi URL server
-    url = "cryptocompare.com"
-    response = requests.get(url).json()
+    # Trik penggabungan teks agar protokol keamanan tautan tidak hilang saat disalin
+    awal_link = "http" + "s://"
+    alamat_api = "cryptocompare.com"
+    url_lengkap = awal_link + alamat_api
     
+    response = requests.get(url_lengkap).json()
     data_list = response['Data']['Data']
     df = pd.DataFrame(data_list)
     
     df['date'] = pd.to_datetime(df['time'], unit='s')
     df = df.rename(columns={'open': 'open', 'high': 'high', 'low': 'low', 'close': 'close'})
-    
     return df[['date', 'open', 'high', 'low', 'close']]
 
 try:
