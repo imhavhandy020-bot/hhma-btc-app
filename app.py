@@ -3,28 +3,37 @@ import pandas as pd
 import pandas_ta_classic as ta
 import requests
 import plotly.graph_objects as go
+from datetime import datetime
 
 st.set_page_config(page_title="HHMA Renko BTC", layout="wide")
 st.title("📊 Aplikasi Sinyal HHMA Renko 400 BTC")
 
 @st.cache_data(ttl=60)
 def get_crypto_data():
-    # Menggunakan parameter lengkap agar server mengirim data angka JSON asli (Bebas Blokir)
+    # Menggunakan API Publik Yahoo Finance (YFinance Ichart) yang bebas blokir dan tanpa API Key
     h = "http" + "s://"
-    link_api = h + "cryptocompare.com"
+    url = h + "yahoo.com"
     
-    response = requests.get(link_api).json()
+    # Menambahkan Header palsu agar server mengenali aplikasi sebagai browser HP/Laptop biasa
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+    response = requests.get(url, headers=headers).json()
     
-    # Masuk ke folder data JSON CryptoCompare
-    data_list = response['Data']['Data']
-    df = pd.DataFrame(data_list)
+    # Ekstraksi struktur data chart Yahoo Finance
+    result = response['chart']['result'][0]
+    timestamps = result['timestamp']
+    indicators = result['indicators']['quote'][0]
     
-    # Konversi data agar sesuai dengan rumus indikator Anda
+    df = pd.DataFrame({
+        'time': timestamps,
+        'open': indicators['open'],
+        'high': indicators['high'],
+        'low': indicators['low'],
+        'close': indicators['close']
+    })
+    
+    # Membersihkan data dari nilai kosong (NaN) dan merapikan format tanggal
+    df = df.dropna().reset_index(drop=True)
     df['date'] = pd.to_datetime(df['time'], unit='s')
-    df['open'] = df['open'].astype(float)
-    df['high'] = df['high'].astype(float)
-    df['low'] = df['low'].astype(float)
-    df['close'] = df['close'].astype(float)
     
     return df[['date', 'open', 'high', 'low', 'close']]
 
@@ -48,14 +57,14 @@ try:
             df.loc[i, 'sell_signal'] = True
             last_signal = -1
 
-    # Pengunci Sinyal Mundur 1 Balok (offset=-1) sesuai skrip asli Anda
+    # Logika Pengunci Sinyal Mundur 1 Balok (offset=-1) sesuai skrip asli Anda
     df['display_buy'] = df['buy_signal'].shift(-1)
     df['display_sell'] = df['sell_signal'].shift(-1)
 
     latest_row = df.iloc[-2]
     current_price = df.iloc[-1]['close']
     
-    st.metric(label="Harga Bitcoin Live (USDT)", value=f"${current_price:,.2f}")
+    st.metric(label="Harga Bitcoin Live (USD)", value=f"${current_price:,.2f}")
 
     if df.iloc[-1]['display_buy'] or df.iloc[-2]['buy_signal']:
         st.success(f"🟢 **SINYAL TERBARU: BUY** pada harga ${latest_row['close']:,.2f}")
@@ -66,10 +75,10 @@ try:
 
     fig = go.Figure()
     
-    # Lilin Candlestick Utama
+    # Grafik Candlestick Utama
     fig.add_trace(go.Candlestick(
         x=df['date'], open=df['open'], high=df['high'], low=df['low'], close=df['close'],
-        name="BTC/USDT", opacity=0.3
+        name="BTC/USD", opacity=0.3
     ))
 
     # Segmentasi Garis HMA Berwarna Merah / Hijau Kontinu
