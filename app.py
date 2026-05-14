@@ -8,12 +8,6 @@ from plotly.subplots import make_subplots
 st.set_page_config(page_title="HHMA Renko BTC Pro", layout="wide")
 st.title("🚀 Aplikasi Trading Pro - HHMA Renko 400 BTC")
 
-# --- FITUR 4: AUTO REFRESH OTOMATIS TIAP 30 DETIK ---
-st.logo("flaticon.com")
-if "run_count" not in st.session_state:
-    st.session_state.run_count = 0
-st.session_state.run_count += 1
-
 # --- SISTEM PENGUNCI SETELAN ANTI REFRESH ---
 query_params = st.query_params
 default_tf = query_params.get("tf", "1 Hari (Daily)")
@@ -57,7 +51,7 @@ try:
     
     # --- HITUNG INDIKATOR ---
     df['hma'] = ta.hma(df[src_aktif], length=length_hma)
-    df['rsi'] = ta.rsi(df['close'], length=14) # Fitur 1: Tambahan RSI
+    df['rsi'] = ta.rsi(df['close'], length=14)
     
     df['is_green'] = df['hma'] >= df['hma'].shift(1)
     df['raw_buy'] = df['is_green'] & (~df['is_green'].shift(1).fillna(False))
@@ -78,7 +72,7 @@ try:
     df['display_buy'] = df['buy_signal'].shift(-1)
     df['display_sell'] = df['sell_signal'].shift(-1)
 
-    # --- FITUR 2: STATISTIK AKURASI BACKTEST ---
+    # --- STATISTIK AKURASI BACKTEST ---
     trades = []
     active_trade = None
     for i in range(len(df)):
@@ -111,7 +105,7 @@ try:
     else:
         st.info("⚪ Status Saat Ini: Mengikuti Tren Berjalan (Hold)")
 
-    # --- FITUR 1: GRAFIK MULTI SUBPLOT (CANDLESTICK + RSI) ---
+    # --- GRAFIK MULTI SUBPLOT (CANDLESTICK + RSI) ---
     fig = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.7, 0.3], vertical_spacing=0.05)
     
     # Subplot 1: Candlestick & HHMA
@@ -135,7 +129,7 @@ try:
     fig.update_layout(xaxis_rangeslider_visible=False, height=650, template="plotly_dark", margin=dict(t=20, b=20))
     st.plotly_chart(fig, use_container_width=True)
 
-    # --- FITUR 3: TABEL RIWAYAT SINYAL TRADING ---
+    # --- TABEL RIWAYAT SINYAL TRADING ---
     st.subheader("📋 Riwayat Sinyal Trading Terakhir")
     df_signals = df[(df['buy_signal'] == True) | (df['sell_signal'] == True)].copy()
     df_signals['Jenis Sinyal'] = df_signals['buy_signal'].apply(lambda x: "🟢 BUY" if x else "🔴 SELL")
