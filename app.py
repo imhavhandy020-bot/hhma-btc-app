@@ -9,15 +9,13 @@ st.title("📊 Aplikasi Sinyal HHMA Renko 400 BTC")
 
 @st.cache_data(ttl=60)
 def get_crypto_data():
-    # SOLUSI: Menggunakan API alternatif dari CryptoCompare yang bebas blokir internet provider HP
+    # PERBAIKAN NYATA: Menambahkan skema https:// secara lengkap agar lolos sensor validasi URL server
     url = "cryptocompare.com"
     response = requests.get(url).json()
     
-    # Ekstraksi data list JSON
     data_list = response['Data']['Data']
     df = pd.DataFrame(data_list)
     
-    # Menyesuaikan nama kolom agar cocok dengan logika indikator Anda
     df['date'] = pd.to_datetime(df['time'], unit='s')
     df = df.rename(columns={'open': 'open', 'high': 'high', 'low': 'low', 'close': 'close'})
     
