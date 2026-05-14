@@ -9,18 +9,18 @@ st.title("📊 Aplikasi Sinyal HHMA Renko 400 BTC")
 
 @st.cache_data(ttl=60)
 def get_crypto_data():
-    # PERBAIKAN: Menggunakan skema URL lengkap https:// agar bisa diakses oleh server cloud
-    url = "binance.com"
+    # SOLUSI: Menggunakan API alternatif dari CryptoCompare yang bebas blokir internet provider HP
+    url = "cryptocompare.com"
     response = requests.get(url).json()
-    df = pd.DataFrame(response, columns=[
-        'open_time', 'open', 'high', 'low', 'close', 'volume', 
-        'close_time', 'quote_volume', 'count', 'taker_buy_base', 'taker_buy_quote', 'ignore'
-    ])
-    df['close'] = df['close'].astype(float)
-    df['open'] = df['open'].astype(float)
-    df['high'] = df['high'].astype(float)
-    df['low'] = df['low'].astype(float)
-    df['date'] = pd.to_datetime(df['open_time'], unit='ms')
+    
+    # Ekstraksi data list JSON
+    data_list = response['Data']['Data']
+    df = pd.DataFrame(data_list)
+    
+    # Menyesuaikan nama kolom agar cocok dengan logika indikator Anda
+    df['date'] = pd.to_datetime(df['time'], unit='s')
+    df = df.rename(columns={'open': 'open', 'high': 'high', 'low': 'low', 'close': 'close'})
+    
     return df[['date', 'open', 'high', 'low', 'close']]
 
 try:
