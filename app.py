@@ -4,7 +4,7 @@ import pandas_ta_classic as ta
 import yfinance as yf
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-import streamlit.components.v1 as components  # Diperlukan untuk injeksi audio JavaScript
+import streamlit.components.v1 as components  
 
 st.set_page_config(page_title="HHMA Renko BTC Max Pro", layout="wide")
 st.title("🛡️ HHMA Renko 400 BTC - Algoritma Filter Berlapis (Maksimal Akurasi)")
@@ -23,14 +23,16 @@ src_options = ["Close (Penutupan)", "Open (Pembukaan)", "High (Tertinggi)", "Low
 tf_index = tf_options.index(default_tf) if default_tf in tf_options else 1
 src_index = src_options.index(default_src) if default_src in src_options else 0
 
-# Tampilan Menu Pengaturan Utama
-col1, col2, col3 = st.columns(3)
+# Tambahan Kolom ke-4 untuk Mengatur Jumlah Tampilan Transaksi di Layar
+col1, col2, col3, col4 = st.columns(4)
 with col1:
     tf_pilihan = st.selectbox("Jangka Waktu (Timeframe):", options=tf_options, index=tf_index)
 with col2:
     src_pilihan = st.selectbox("Sumber Data (Source):", options=src_options, index=src_index)
 with col3:
     length_hma = st.slider("Panjang HMA (Length):", min_value=2, max_value=50, value=default_len, step=1)
+with col4:
+    jumlah_tampilan = st.slider("Jumlah Lilin di Layar:", min_value=10, max_value=300, value=100, step=10)
 
 st.query_params.update(tf=tf_pilihan, src=src_pilihan, len=str(length_hma))
 
@@ -47,9 +49,7 @@ def get_crypto_data(p, i):
     df = df.rename(columns={'Date': 'date', 'Datetime': 'date', 'Open': 'open', 'High': 'high', 'Low': 'low', 'Close': 'close', 'Volume': 'volume'})
     return df[['date', 'open', 'high', 'low', 'close', 'volume']]
 
-# --- FUNGSI ALARM AUDIO (JAVASCRIPT BROWSER) ---
 def putar_alarm(jenis_sinyal):
-    # Menggunakan audio open-source yang andal agar langsung berbunyi di browser
     if jenis_sinyal == "BUY":
         audio_url = "google.com"
     else:
@@ -59,7 +59,7 @@ def putar_alarm(jenis_sinyal):
     <script>
         var audio = new Audio('{audio_url}');
         audio.play().catch(function(error) {{
-            console.log("Browser memblokir autoplay sebelum interaksi pengguna: ", error);
+            console.log("Autoplay diblokir browser sebelum interaksi pengguna: ", error);
         }});
     </script>
     """
@@ -104,9 +104,16 @@ try:
     target_tp = 1.045  
     target_sl = 0.985  
 
+    live_tp_price = None
+    live_sl_price = None
+    live_entry_price = None
+
     for i in range(len(df)):
         if df.loc[i, 'buy_signal']:
             active_trade_price = df.loc[i, 'close']
+            live_entry_price = active_trade_price
+            live_tp_price = active_trade_price * target_tp
+            live_sl_price = active_trade_price * target_sl
         elif active_trade_price is not None:
             high_match = df.loc[i, 'high'] >= (active_trade_price * target_tp)
             low_match = df.loc[i, 'low'] <= (active_trade_price * target_sl)
@@ -124,7 +131,6 @@ try:
         wins = len([t for t in trades if t > 0])
         win_rate = (wins / len(trades)) * 100
 
-    # Tampilan Papan Metrik Hasil Optimasi
     latest_row = df.iloc[-2]
     current_price = df.iloc[-1]['close']
     
@@ -134,50 +140,61 @@ try:
     with m2:
         st.metric(label="Persentase Akurasi Sistem Maksimal", value=f"{win_rate:.1f}%", delta=f"{len(trades)} Sinyal Lolos Sensor")
 
-    # --- LOGIKA PEMICU ALARM REAL-TIME ---
     is_latest_buy = df.iloc[-1]['display_buy'] or df.iloc[-2]['buy_signal']
     is_latest_sell = df.iloc[-1]['display_sell'] or df.iloc[-2]['sell_signal']
 
     if is_latest_buy:
         st.success(f"🟢 **SINYAL TERBARU: BUY** pada harga ${latest_row['close']:,.2f} (Konfirmasi Tren Institusional)")
-        putar_alarm("BUY")  # <--- Memicu Alarm BUY
+        putar_alarm("BUY")  
     elif is_latest_sell:
         st.error(f"🔴 **SINYAL TERBARU: SELL** pada harga ${latest_row['close']:,.2f} (Konfirmasi Tren Institusional)")
-        putar_alarm("SELL")  # <--- Memicu Alarm SELL
+        putar_alarm("SELL")  
     else:
         st.info("⚪ Status Saat Ini: Hold Tren (Menunggu Sinyal Berkekuatan Tinggi Luar Biasa)")
+
+    # --- PEMOTONGAN DATA UNTUK FOKUS BEBERAPA TRANSAKSI TERAKHIR ---
+    df_grafik = df.tail(jumlah_tampilan).reset_index(drop=True)
 
     # --- GRAFIK SEGMEN BERSIH TERPISAH ---
     fig = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.75, 0.25], vertical_spacing=0.06)
     
-    fig.add_trace(go.Candlestick(x=df['date'], open=df['open'], high=df['high'], low=df['low'], close=df['close'], name="BTC/USD", opacity=0.3), row=1, col=1)
-    fig.add_trace(go.Scatter(x=df['date'], y=df['ema_200'], mode='lines', line=dict(color='white', width=1.5, dash='dot'), name="EMA 200 (Tren Makro)"), row=1, col=1)
+    fig.add_trace(go.Candlestick(x=df_grafik['date'], open=df_grafik['open'], high=df_grafik['high'], low=df_grafik['low'], close=df_grafik['close'], name="BTC/USD", opacity=0.3), row=1, col=1)
+    fig.add_trace(go.Scatter(x=df_grafik['date'], y=df_grafik['ema_200'], mode='lines', line=dict(color='white', width=1.5, dash='dot'), name="EMA 200 (Tren Makro)"), row=1, col=1)
     
-    for i in range(1, len(df)):
-        color = "green" if df.loc[i, 'is_green'] else "red"
-        fig.add_trace(go.Scatter(x=df['date'].iloc[i-1:i+1], y=df['hma'].iloc[i-1:i+1], mode='lines', line=dict(color=color, width=3), showlegend=False), row=1, col=1)
+    for i in range(1, len(df_grafik)):
+        color = "green" if df_grafik.loc[i, 'is_green'] else "red"
+        fig.add_trace(go.Scatter(x=df_grafik['date'].iloc[i-1:i+1], y=df_grafik['hma'].iloc[i-1:i+1], mode='lines', line=dict(color=color, width=3), showlegend=False), row=1, col=1)
 
-    buy_plots = df[df['display_buy'] == True]
+    buy_plots = df_grafik[df_grafik['display_buy'] == True]
     fig.add_trace(go.Scatter(x=buy_plots['date'], y=buy_plots['hma'], mode='markers', marker=dict(symbol='triangle-up', size=16, color='green'), name="Sinyal BUY Maksimal"), row=1, col=1)
 
-    sell_plots = df[df['display_sell'] == True]
+    sell_plots = df_grafik[df_grafik['display_sell'] == True]
     fig.add_trace(go.Scatter(x=sell_plots['date'], y=sell_plots['hma'], mode='markers', marker=dict(symbol='triangle-down', size=16, color='red'), name="Sinyal SELL Maksimal"), row=1, col=1)
 
-    fig.add_trace(go.Scatter(x=df['date'], y=df['atr'], mode='lines', line=dict(color='magenta', width=2), name="ATR Volatilitas"), row=2, col=1)
-    fig.add_trace(go.Scatter(x=df['date'], y=df['atr_ma'], mode='lines', line=dict(color='yellow', width=1), name="Rata-rata Volatilitas"), row=2, col=1)
+    # Menampilkan garis target TP/SL hanya jika harga entri masuk ke dalam rentang lilin yang dipotong
+    if live_entry_price is not None and live_entry_price >= df_grafik['low'].min() and live_entry_price <= df_grafik['high'].max():
+        fig.add_hline(y=live_entry_price, line_dash="dash", line_color="#3498db", line_width=1.5, 
+                      annotation_text=f"Entry: ${live_entry_price:,.2f}", annotation_position="top right", row=1, col=1)
+        fig.add_hline(y=live_tp_price, line_dash="dash", line_color="#2ecc71", line_width=2, 
+                      annotation_text=f"Target TP (+4.5%): ${live_tp_price:,.2f}", annotation_position="top right", row=1, col=1)
+        fig.add_hline(y=live_sl_price, line_dash="dash", line_color="#e74c3c", line_width=2, 
+                      annotation_text=f"Batas SL (-1.5%): ${live_sl_price:,.2f}", annotation_position="bottom right", row=1, col=1)
+
+    fig.add_trace(go.Scatter(x=df_grafik['date'], y=df_grafik['atr'], mode='lines', line=dict(color='magenta', width=2), name="ATR Volatilitas"), row=2, col=1)
+    fig.add_trace(go.Scatter(x=df_grafik['date'], y=df_grafik['atr_ma'], mode='lines', line=dict(color='yellow', width=1), name="Rata-rata Volatilitas"), row=2, col=1)
 
     fig.update_layout(xaxis_rangeslider_visible=False, height=650, template="plotly_dark", margin=dict(t=10, b=10))
     st.plotly_chart(fig, use_container_width=True)
 
-    # --- TABEL HISTORY TRANSAKSI ---
-    st.subheader("📋 Riwayat Sinyal Khusus Level Maksimal")
+    # --- TABEL HISTORY TRANSAKSI (DIBATASI HANYA 5 TRANSAKSI TERAKHIR) ---
+    st.subheader("📋 Riwayat Sinyal Khusus Level Maksimal (5 Terakhir)")
     df_signals = df[(df['buy_signal'] == True) | (df['sell_signal'] == True)].copy()
     df_signals['Jenis Sinyal'] = df_signals['buy_signal'].apply(lambda x: "🟢 BUY" if x else "🔴 SELL")
     df_signals['Waktu Sinyal'] = df_signals['date'].dt.strftime('%Y-%m-%d %H:%M')
     df_signals = df_signals.rename(columns={'close': 'Harga Eksekusi (USD)'})
     
     st.dataframe(
-        df_signals[['Waktu Sinyal', 'Jenis Sinyal', 'Harga Eksekusi (USD)']].sort_index(ascending=False).head(10),
+        df_signals[['Waktu Sinyal', 'Jenis Sinyal', 'Harga Eksekusi (USD)']].sort_index(ascending=False).head(5),
         use_container_width=True, hide_index=True
     )
 
