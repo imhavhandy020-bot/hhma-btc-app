@@ -1,4 +1,4 @@
 streamlit
-pandas
 pandas-ta-classic
 plotly
+yfinance
