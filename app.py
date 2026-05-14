@@ -9,17 +9,17 @@ st.title("📊 Aplikasi Sinyal HHMA Renko 400 BTC")
 
 @st.cache_data(ttl=60)
 def get_crypto_data():
-    # Menggunakan jalur data histori harian resmi dari API publik CryptoCompare (bebas blokir HP)
+    # Menggunakan parameter lengkap agar server mengirim data angka JSON asli (Bebas Blokir)
     h = "http" + "s://"
     link_api = h + "cryptocompare.com"
     
     response = requests.get(link_api).json()
     
-    # Masuk ke struktur JSON 'Data' -> 'Data' sesuai standar CryptoCompare
+    # Masuk ke folder data JSON CryptoCompare
     data_list = response['Data']['Data']
     df = pd.DataFrame(data_list)
     
-    # Sinkronisasi penamaan kolom data waktu dan harga agar kompatibel dengan rumus Anda
+    # Konversi data agar sesuai dengan rumus indikator Anda
     df['date'] = pd.to_datetime(df['time'], unit='s')
     df['open'] = df['open'].astype(float)
     df['high'] = df['high'].astype(float)
@@ -48,7 +48,7 @@ try:
             df.loc[i, 'sell_signal'] = True
             last_signal = -1
 
-    # Mengembalikan sinyal mundur 1 bar (offset = -1) sesuai logika Pine Script asli
+    # Pengunci Sinyal Mundur 1 Balok (offset=-1) sesuai skrip asli Anda
     df['display_buy'] = df['buy_signal'].shift(-1)
     df['display_sell'] = df['sell_signal'].shift(-1)
 
@@ -66,13 +66,13 @@ try:
 
     fig = go.Figure()
     
-    # Grafik Candlestick Utama
+    # Lilin Candlestick Utama
     fig.add_trace(go.Candlestick(
         x=df['date'], open=df['open'], high=df['high'], low=df['low'], close=df['close'],
         name="BTC/USDT", opacity=0.3
     ))
 
-    # Segmentasi Garis HHMA Kontinu Multi-Warna (Merah / Hijau)
+    # Segmentasi Garis HMA Berwarna Merah / Hijau Kontinu
     for i in range(1, len(df)):
         color = "green" if df.loc[i, 'is_green'] else "red"
         fig.add_trace(go.Scatter(
@@ -80,14 +80,14 @@ try:
             mode='lines', line=dict(color=color, width=3), showlegend=False
         ))
 
-    # Penanda Plot Sinyal BUY (Mundur 1 Balok)
+    # Plot Panah Hijau BUY Mundur 1 Balok
     buy_plots = df[df['display_buy'] == True]
     fig.add_trace(go.Scatter(
         x=buy_plots['date'], y=buy_plots['hma'],
         mode='markers', marker=dict(symbol='triangle-up', size=15, color='green'), name="Sinyal BUY"
     ))
 
-    # Penanda Plot Sinyal SELL (Mundur 1 Balok)
+    # Plot Panah Merah SELL Mundur 1 Balok
     sell_plots = df[df['display_sell'] == True]
     fig.add_trace(go.Scatter(
         x=sell_plots['date'], y=sell_plots['hma'],
