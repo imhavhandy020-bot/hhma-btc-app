@@ -6,7 +6,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 st.set_page_config(page_title="HHMA Renko BTC Max Pro", layout="wide")
-st.title("🛡️ HHMA Renko 400 BTC - Perbaikan Mutlak Siklus Riwayat")
+st.title("🛡️ HHMA Renko 400 BTC - Sistem Analisis & Statistik Komplit")
 
 # --- SISTEM PENGUNCI SETELAN ANTI REFRESH ---
 query_params = st.query_params
@@ -69,18 +69,18 @@ try:
         st.error("Gagal mengambil data.")
         st.stop()
 
-    # --- PERHITUNGAN INDIKATOR MURNI PINE SCRIPT ---
+    # --- PERHITUNGAN INDIKATOR ---
     df['hma'] = ta.hma(df[src_aktif], length=length_hma)
     df['is_green'] = df['hma'] >= df['hma'].shift(1)
+    df['is_red'] = df['hma'] < df['hma'].shift(1)
     
     df['raw_buy'] = df['is_green'] & (~df['is_green'].shift(1).fillna(False))
-    df['raw_sell'] = (~df['is_green']) & df['is_green'].shift(1).fillna(False)
+    df['raw_sell'] = df['is_red'] & (~df['is_red'].shift(1).fillna(False))
 
     df['buy_signal'] = False
     df['sell_signal'] = False
     last_signal = 0
 
-    # Sistem pengunci status bergantian BUY ↔ SELL
     for i in df.index:
         if df.at[i, 'raw_buy'] and last_signal != 1:
             df.at[i, 'buy_signal'] = True
@@ -89,17 +89,15 @@ try:
             df.at[i, 'sell_signal'] = True
             last_signal = -1
 
-    # Sinkronisasi offset grafik per menit
-    df['display_buy'] = df['buy_signal'].shift(1).fillna(False)
-    df['display_sell'] = df['sell_signal'].shift(1).fillna(False)
+    df['display_buy'] = df['buy_signal']
+    df['display_sell'] = df['sell_signal']
 
-    # --- PERBAIKAN LOGIKA BACKTEST: SATU BARIS PER SIKLUS (BUY -> SELL) ---
+    # --- MATRIKS BACKTEST JURNAL ---
     trades_list = []  
     active_trade = None
 
     for i in df.index:
         if df.at[i, 'display_buy'] and active_trade is None:
-            # Buka posisi BUY
             active_trade = {
                 'Siklus Transaksi': "🟢 BUY ➔ 🔴 SELL",
                 'Waktu Entry (BUY)': df.at[i, 'date'].strftime('%Y-%m-%d %H:%M'),
@@ -112,7 +110,6 @@ try:
             }
 
         elif df.at[i, 'display_sell'] and active_trade is not None:
-            # Tutup posisi menggunakan pasangan SELL murninya
             profit_pct = ((df.at[i, 'close'] - active_trade['Harga Entry ($)']) / active_trade['Harga Entry ($)']) * 100
             
             active_trade['Waktu Exit (SELL)'] = df.at[i, 'date'].strftime('%Y-%m-%d %H:%M')
@@ -124,11 +121,10 @@ try:
             trades_list.append(active_trade)
             active_trade = None
 
-    # Jika transaksi terakhir masih berjalan (belum ada sinyal SELL)
     if active_trade is not None:
         trades_list.append(active_trade)
 
-    # Rekap data metrik atas
+    # Rekap Skor Metrik Atas
     total_trades_done = [t for t in trades_list if t['Status'] != "Berjalan (Running)"]
     win_rate = 0
     total_profit_pct = sum([t['Profit (%)'] for t in total_trades_done])
@@ -160,9 +156,8 @@ try:
     with m4:
         st.metric(label="Win Rate & Estimasi Profit", value=f"{win_rate:.1f}%", delta=f"${estimasi_profit_usd:+,.2f} ({total_profit_pct:+.1f}%)")
 
-    # --- VISUALISASI GRAFIK UTAMA CANDLESTICK (PLOTLY) ---
+    # --- VISUALISASI GRAFIK UTAMA ---
     st.subheader("📈 Grafik Analisis Multi-Indikator Live")
-    
     df_plot = df.iloc[-jumlah_tampilan:].copy()
     fig = make_subplots(rows=1, cols=1)
     
@@ -171,38 +166,55 @@ try:
         name="Bitcoin (BTC)", increasing_line_color='#26a69a', decreasing_line_color='#ef5350'
     ))
     
-    # Garis HHMA Dinamis Berubah Warna per Segmen Lilin
     for i in range(1, len(df_plot)):
         p1 = df_plot.iloc[i-1]
         p2 = df_plot.iloc[i]
         line_color = '#00e676' if p2['is_green'] else '#ff1744'
-        fig.add_trace(go.Scatter(
-            x=[p1['date'], p2['date']], y=[p1['hma'], p2['hma']],
-            mode='lines', line=dict(color=line_color, width=3), showlegend=False, hoverinfo='skip'
-        ))
+        fig.add_trace(go.Scatter(x=[p1['date'], p2['date']], y=[p1['hma'], p2['hma']], mode='lines', line=dict(color=line_color, width=3), showlegend=False, hoverinfo='skip'))
     
-    # Penempatan Sinyal Grafik Melekat Persis di Atas Garis HHMA
     buy_markers = df_plot[df_plot['display_buy']]
     sell_markers = df_plot[df_plot['display_sell']]
     
-    fig.add_trace(go.Scatter(
-        x=buy_markers['date'], y=buy_markers['hma'], mode='markers',
-        name='Sinyal BUY', marker=dict(symbol='triangle-up', size=14, color='#00e676', line=dict(width=1, color='white'))
-    ))
-    
-    fig.add_trace(go.Scatter(
-        x=sell_markers['date'], y=sell_markers['hma'], mode='markers',
-        name='Sinyal EXIT', marker=dict(symbol='triangle-down', size=14, color='#ff1744', line=dict(width=1, color='white'))
-    ))
+    fig.add_trace(go.Scatter(x=buy_markers['date'], y=buy_markers['hma'], mode='markers', name='Sinyal BUY', marker=dict(symbol='triangle-up', size=14, color='#00e676', line=dict(width=1, color='white'))))
+    fig.add_trace(go.Scatter(x=sell_markers['date'], y=sell_markers['hma'], mode='markers', name='Sinyal EXIT', marker=dict(symbol='triangle-down', size=14, color='#ff1744', line=dict(width=1, color='white'))))
     
     fig.update_layout(height=600, xaxis_rangeslider_visible=False, template="plotly_dark", margin=dict(l=10, r=10, t=10, b=10))
     st.plotly_chart(fig, use_container_width=True)
 
-    # --- TABEL RIWAYAT TRANSAKSI BERPASANGAN (TERBARU DI ATAS) ---
+    # --- TABEL JURNAL TRANSAKSI ---
     if trades_list:
         st.subheader("📜 Riwayat Transaksi Jurnal Backtest")
         df_trades_report = pd.DataFrame(trades_list)
         st.dataframe(df_trades_report.iloc[::-1], use_container_width=True, hide_index=True)
+
+        # --- PANEL TAMBAHAN: STATISTIK WIN VS LOSS KOMPLIT ---
+        st.markdown("---")
+        st.subheader("📊 Statistik Detail Kinerja Sistem (Win vs Loss)")
+        
+        list_win = [t for t in total_trades_done if t['Profit (%)'] > 0]
+        list_loss = [t for t in total_trades_done if t['Profit (%)'] <= 0]
+        
+        total_win = len(list_win)
+        total_loss = len(list_loss)
+        
+        avg_win = sum([t['Profit (%)'] for t in list_win]) / total_win if total_win > 0 else 0.0
+        avg_loss = sum([t['Profit (%)'] for t in list_loss]) / total_loss if total_loss > 0 else 0.0
+        
+        sum_win_usd = sum([t['Profit ($ USD)'] for t in list_win])
+        sum_loss_usd = abs(sum([t['Profit ($ USD)'] for t in list_loss]))
+        profit_factor = sum_win_usd / sum_loss_usd if sum_loss_usd > 0 else sum_win_usd
+        
+        s1, s2, s3, s4 = st.columns(4)
+        with s1:
+            st.metric(label="🟢 Total Transaksi Profit (Win)", value=f"{total_win} Trade", delta=f"Rata-rata: +{avg_win:.2f}%")
+        with s2:
+            st.metric(label="🔴 Total Transaksi Rugi (Loss)", value=f"{total_loss} Trade", delta=f"Rata-rata: {avg_loss:.2f}%")
+        with s3:
+            st.metric(label="🎯 Profit Factor Strategi", value=f"{profit_factor:.2f}x", help="Nilai di atas 1.0 menandakan strategi mencetak laba bersih.")
+        with s4:
+            # Menyediakan tombol download instan data CSV langsung ke penyimpanan internal HP Anda
+            csv_data = df_trades_report.to_csv(index=False).encode('utf-8')
+            st.download_button(label="📥 Unduh File Jurnal (CSV)", data=csv_data, file_name="Jurnal_HHMA_Renko_BTC.csv", mime="text/csv", use_container_width=True)
 
 except Exception as e:
     st.error(f"Terjadi kesalahan teknis sistem: {e}")
