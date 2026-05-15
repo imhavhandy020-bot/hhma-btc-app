@@ -7,7 +7,7 @@ from plotly.subplots import make_subplots
 import requests
 
 st.set_page_config(page_title="HHMA Sniper BTC Futures Max Pro", layout="wide")
-st.title("🎯 HHMA Renko Sniper Pro - 4H Institutional System")
+st.title("🛡️ HHMA Renko Sniper Pro - 4H Institutional System (Compound Active)")
 
 # ==========================================
 # ⚙️ PANEL SETELAN PARAMETER (SATU TEMPAT)
@@ -30,13 +30,13 @@ st.sidebar.markdown("---")
 st.sidebar.header("🛡️ Proteksi Volatilitas (ATR & Chandelier)")
 length_atr = st.sidebar.slider("Periode ATR:", min_value=5, max_value=30, value=14, step=1)
 atr_multiplier = st.sidebar.slider("Pengali ATR (Stop Loss Jauh):", min_value=1.0, max_value=4.5, value=3.5, step=0.1)
-chandelier_mult = st.sidebar.slider("Chandelier Trailing Mult:", min_value=1.0, max_value=4.0, value=2.0, step=0.1, help="Mengunci profit otomatis saat tren berbalik.")
+chandelier_mult = st.sidebar.slider("Chandelier Trailing Mult:", min_value=1.0, max_value=4.0, value=2.0, step=0.1)
 
 st.sidebar.markdown("---")
 st.sidebar.header("🔥 Manajemen Risiko & Target")
 modal_awal = st.sidebar.number_input("Margin Awal ($ USD):", min_value=10, value=1000, step=100)
 leverage = st.sidebar.slider("Leverage (Multiplier):", min_value=1, max_value=50, value=10, step=1)
-risiko_per_trade_pct = st.sidebar.slider("Risiko per Transaksi (% Modal):", min_value=0.5, max_value=10.0, value=1.0, step=0.5)
+risiko_per_trade_pct = st.sidebar.slider("Risiko per Transaksi (% Modal):", min_value=0.5, max_value=10.0, value=1.0, step=0.5, help="Risiko dihitung dinamis dari saldo berjalan saat itu (Compounding).")
 
 col_tp1, col_tp2 = st.sidebar.columns(2)
 with col_tp1:
@@ -84,14 +84,12 @@ try:
         st.error("Gagal mengambil data dari Yahoo Finance.")
         st.stop()
 
-    # Hitung Indikator Dasar
     df['hma'] = ta.hma(df[src_aktif], length=length_hma)
     df['ema'] = ta.ema(df['close'], length=length_ema)
     df['rsi'] = ta.rsi(df['close'], length=length_rsi)
     df['atr'] = ta.atr(df['high'], df['low'], df['close'], length=length_atr)
     df['vol_ma'] = ta.sma(df['volume'], length=length_vol_ma)
     
-    # Tambahan Indikator Premium: Chandelier Exit (Trailing Stop Level)
     df['highest_high'] = df['high'].rolling(window=22).max()
     df['lowest_low'] = df['low'].rolling(window=22).min()
     df['chandelier_long'] = df['highest_high'] - (df['atr'] * chandelier_mult)
@@ -104,14 +102,12 @@ try:
     df['sell_signal'] = False
     last_signal = 0
 
-    # Logika Pemfilteran Ketat Sesi Sniper 4H
     for i in df.index:
         if i < max(length_hma, length_ema, length_atr, length_vol_ma, length_rsi, 22): continue
             
         is_pullback_long = (df.at[i, 'low'] <= df.at[i, 'ema'] * 1.002) and (df.at[i, 'close'] > df.at[i, 'ema'])
         is_pullback_short = (df.at[i, 'high'] >= df.at[i, 'ema'] * 0.998) and (df.at[i, 'close'] < df.at[i, 'ema'])
         
-        # Saringan RSI Super Ketat
         rsi_safe_long = df.at[i, 'rsi'] < 55
         rsi_safe_short = df.at[i, 'rsi'] > 45
         volume_valid = df.at[i, 'volume'] > df.at[i, 'vol_ma']
@@ -126,24 +122,34 @@ try:
     df['display_buy'] = df['buy_signal']
     df['display_sell'] = df['sell_signal']
 
+    # --- BANNER SINYAL REAL-TIME DI BAHAW JUDUL ---
+    last_row = df.iloc[-1]
+    if last_row['display_buy']:
+        st.success("### 🟢 SINYAL AKTIF: LONG (BUY) SEKARANG! 🚀")
+        st.info(f"**Parameter:** Entry: ${last_row['close']:,.2f} | Est. SL: ${last_row['close'] - (last_row['atr'] * atr_multiplier):,.2f}")
+    elif last_row['display_sell']:
+        st.error("### 🔴 SINYAL AKTIF: SHORT (SELL) SEKARANG! 📉")
+        st.info(f"**Parameter:** Entry: ${last_row['close']:,.2f} | Est. SL: ${last_row['close'] + (last_row['atr'] * atr_multiplier):,.2f}")
+    else:
+        if last_row['is_green']: st.info("### ⚪ STATUS PASAR: WAIT / HOLD LONG (Tren Bullish Berjalan) 📈")
+        else: st.warning("### ⚪ STATUS PASAR: WAIT / HOLD SHORT (Tren Bearish Berjalan) 📉")
+
+    st.markdown("---")
+
     # ==========================================
-    # ⚙️ SIMULATOR BACKTEST UTAMA
+    # ⚙️ SIMULATOR BACKTEST UTAMA + COMPOUNDING
     # ==========================================
     trades_list = []  
     active_trade = None
     current_equity = modal_awal
     
-    # PERBAIKAN TOTAL: Pengambilan indeks pertama menggunakan .loc[0] aman
     equity_timestamps = [df.loc[0, 'date']]
     equity_values = [modal_awal]
 
     for i in df.index:
-        # Cek Kondisi Posisi Berjalan
         if active_trade is not None and active_trade['Status'] == "Berjalan (Running)":
             if active_trade['Posisi'] == "🟢 LONG (Buy)":
-                # Proteksi Trailing Stop Dinamis Berbasis Chandelier Exit
                 current_sl = max(active_trade['Harga SL ($)'], df.at[i, 'chandelier_long'])
-                
                 if df.at[i, 'low'] <= current_sl:
                     p_close = current_sl
                     ratio_aktif = 1.0 if not active_trade['TP1_Hit'] else 0.5
@@ -192,7 +198,6 @@ try:
 
             elif active_trade is not None and active_trade['Posisi'] == "🔴 SHORT (Sell)":
                 current_sl = min(active_trade['Harga SL ($)'], df.at[i, 'chandelier_short'])
-                
                 if df.at[i, 'high'] >= current_sl:
                     p_close = current_sl
                     ratio_aktif = 1.0 if not active_trade['TP1_Hit'] else 0.5
@@ -239,7 +244,7 @@ try:
                     equity_values.append(current_equity)
                     active_trade = None
 
-        # Pemicu Eksekusi Posisi Baru
+        # --- EKSEKUSI POSISI BARU DENGAN MODAL BERJALAN (COMPOUNDING) ---
         if df.at[i, 'display_buy']:
             if active_trade is not None:
                 ratio_aktif = 1.0 if not active_trade['TP1_Hit'] else 0.5
@@ -261,6 +266,7 @@ try:
             tp2_price = df.at[i, 'close'] + (jarak_sl * tp2_ratio)
             
             jarak_sl_pct = jarak_sl / df.at[i, 'close']
+            # KRUSIAL: Nilai usd_risk kini dihitung otomatis dari 'current_equity' bukan 'modal_awal'
             usd_risk = current_equity * (risiko_per_trade_pct / 100)
             margin_final = min((usd_risk / (jarak_sl_pct * leverage)), current_equity * 0.95)
 
@@ -271,7 +277,7 @@ try:
                 'Margin Kunci ($)': round(margin_final, 2), 'Status': "Berjalan (Running)", 'TP1_Hit': False, 'Laba_TP1_USD': 0
             }
             if i == df.index[-1]:
-                send_telegram_alert(f"🟢 *SNIPER LONG BTC-USD*\nEntry: ${df.at[i, 'close']:.2f}\nSL: ${sl_price:.2f}\nTP1: ${tp1_price:.2f}\nTP2: ${tp2_price:.2f}")
+                send_telegram_alert(f"🟢 *SNIPER LONG BTC-USD*\nEntry: ${df.at[i, 'close']:.2f}\nSL: ${sl_price:.2f}")
 
         elif df.at[i, 'display_sell']:
             if active_trade is not None:
@@ -294,6 +300,7 @@ try:
             tp2_price = df.at[i, 'close'] - (jarak_sl * tp2_ratio)
             
             jarak_sl_pct = jarak_sl / df.at[i, 'close']
+            # KRUSIAL: Nilai usd_risk kini dihitung otomatis dari 'current_equity' bukan 'modal_awal'
             usd_risk = current_equity * (risiko_per_trade_pct / 100)
             margin_final = min((usd_risk / (jarak_sl_pct * leverage)), current_equity * 0.95)
 
@@ -304,7 +311,7 @@ try:
                 'Margin Kunci ($)': round(margin_final, 2), 'Status': "Berjalan (Running)", 'TP1_Hit': False, 'Laba_TP1_USD': 0
             }
             if i == df.index[-1]:
-                send_telegram_alert(f"🔴 *SNIPER SHORT BTC-USD*\nEntry: ${df.at[i, 'close']:.2f}\nSL: ${sl_price:.2f}\nTP1: ${tp1_price:.2f}\nTP2: ${tp2_price:.2f}")
+                send_telegram_alert(f"🔴 *SNIPER SHORT BTC-USD*\nEntry: ${df.at[i, 'close']:.2f}\nSL: ${sl_price:.2f}")
 
     if active_trade is not None and active_trade not in trades_list:
         trades_list.append(active_trade)
@@ -331,16 +338,16 @@ try:
 
     current_price = df.iloc[-1]['close']
     
-    st.markdown("### 📊 Hasil Evaluasi Kinerja Kuantitatif")
+    st.markdown("### 📊 Hasil Evaluasi Kinerja Kuantitatif (Compound Growth)")
     m1, m2, m3, m4, m5, m6 = st.columns(6)
     m1.metric("Harga Pasaran BTC", f"${current_price:,.2f}")
     m2.metric("Target Win Rate", f"{win_rate:.2f}%")
     m3.metric("Profit Factor", f"{profit_factor:.2f}" if profit_factor > 0 else "N/A")
     m4.metric("Max Drawdown (MDD)", f"{max_dd_pct:.2f}%")
-    m5.metric("Net ROI Modal", f"{(total_profit_usd/modal_awal)*100:.2f}%")
-    m6.metric("Proyeksi Saldo", f"${modal_awal + total_profit_usd:,.2f}")
+    m5.metric("Compound ROI (%)", f"{(total_profit_usd/modal_awal)*100:.2f}%", help="Pertumbuhan modal total menggunakan efek gulung keuntungan.")
+    m6.metric("Saldo Akhir Berjalan", f"${modal_awal + total_profit_usd:,.2f}")
 
-    # Render Subplot Utama (Template Diperbaiki Ke 'plotly_dark')
+    # Render Subplot Utama
     df_plot = df.tail(jumlah_tampilan)
     fig = make_subplots(rows=4, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_width=[0.12, 0.12, 0.12, 0.64])
     fig.add_trace(go.Candlestick(x=df_plot['date'], open=df_plot['open'], high=df_plot['high'], low=df_plot['low'], close=df_plot['close'], name="Candlestick"), row=1, col=1)
@@ -360,7 +367,7 @@ try:
     fig.update_layout(height=800, xaxis_rangeslider_visible=False, template="plotly_dark")
     st.plotly_chart(fig, use_container_width=True)
 
-    # Render Kurva Ekuitas (Template Diperbaiki Ke 'plotly_dark')
+    # Render Kurva Ekuitas
     st.markdown("### 📈 Kurva Pertumbuhan Ekuitas Modal (Equity Curve)")
     if len(equity_values) > 1:
         df_equity = pd.DataFrame({"Waktu": equity_timestamps, "Modal ($ USD)": equity_values})
