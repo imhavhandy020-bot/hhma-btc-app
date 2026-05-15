@@ -1,7 +1,4 @@
-streamlit
 pandas
-pandas_ta_classic
-yfinance
-plotly
-requests
-ccxt>=4.2.0
+pandas-ta
+python-binance
+streamlit-autorefresh
