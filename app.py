@@ -6,7 +6,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 st.set_page_config(page_title="HHMA Renko BTC Max Pro", layout="wide")
-st.title("🛡️ HHMA Renko 400 BTC - Siklus Sinyal Bergantian (BUY ↔ SELL)")
+st.title("🛡️ HHMA Renko 400 BTC - Perbaikan Mutlak Siklus Riwayat")
 
 # --- SISTEM PENGUNCI SETELAN ANTI REFRESH ---
 query_params = st.query_params
@@ -69,7 +69,7 @@ try:
         st.error("Gagal mengambil data.")
         st.stop()
 
-    # --- PERHITUNGAN INDIKATOR SESUAI PINE SCRIPT ANDA ---
+    # --- PERHITUNGAN INDIKATOR MURNI PINE SCRIPT ---
     df['hma'] = ta.hma(df[src_aktif], length=length_hma)
     df['is_green'] = df['hma'] >= df['hma'].shift(1)
     
@@ -80,7 +80,7 @@ try:
     df['sell_signal'] = False
     last_signal = 0
 
-    # Sistem pengunci status agar sinyal selalu bergantian BUY -> SELL -> BUY -> SELL
+    # Sistem pengunci status bergantian BUY ↔ SELL
     for i in df.index:
         if df.at[i, 'raw_buy'] and last_signal != 1:
             df.at[i, 'buy_signal'] = True
@@ -89,67 +89,53 @@ try:
             df.at[i, 'sell_signal'] = True
             last_signal = -1
 
-    # Emulasi offset=-1 dari TradingView (geser maju 1 bar untuk sinkronisasi grafik)
+    # Sinkronisasi offset grafik per menit
     df['display_buy'] = df['buy_signal'].shift(1).fillna(False)
     df['display_sell'] = df['sell_signal'].shift(1).fillna(False)
 
-    # --- MATRIKS BACKTEST PARADIGMA BERGANTIAN (SELALU BUY -> SELL) ---
+    # --- PERBAIKAN LOGIKA BACKTEST: SATU BARIS PER SIKLUS (BUY -> SELL) ---
     trades_list = []  
     active_trade = None
 
     for i in df.index:
-        # PERBAIKAN: Transaksi masuk hanya dieksekusi jika ada sinyal display_buy
-        if df.at[i, 'display_buy']:
-            # Jika sebelumnya ada trade menggantung, tutup paksa tepat saat BUY baru ini aktif
-            if active_trade is not None:
-                profit_pct = ((df.at[i, 'close'] - active_trade['entry_price']) / active_trade['entry_price']) * 100
-                active_trade['status'] = "🛑 Ditutup Sinyal Kebalikan"
-                active_trade['profit_pct'] = profit_pct * leverage
-                active_trade['profit_usd'] = (active_trade['profit_pct'] / 100) * modal_awal
-                trades_list.append(active_trade)
-
-            # Buka posisi BUY baru
+        if df.at[i, 'display_buy'] and active_trade is None:
+            # Buka posisi BUY
             active_trade = {
-                'waktu_entry': df.at[i, 'date'].strftime('%Y-%m-%d %H:%M'),
-                'jenis': "🟢 BUY",
-                'entry_price': df.at[i, 'close'],
-                'waktu_exit': "-",
-                'exit_price': 0.0,
-                'status': "Berjalan (Running)",
-                'profit_pct': 0.0,
-                'profit_usd': 0.0
+                'Siklus Transaksi': "🟢 BUY ➔ 🔴 SELL",
+                'Waktu Entry (BUY)': df.at[i, 'date'].strftime('%Y-%m-%d %H:%M'),
+                'Harga Entry ($)': round(df.at[i, 'close'], 2),
+                'Waktu Exit (SELL)': "-",
+                'Harga Exit ($)': 0.0,
+                'Status': "Berjalan (Running)",
+                'Profit (%)': 0.0,
+                'Profit ($ USD)': 0.0
             }
 
-        # PERBAIKAN MUTLAK: Posisi BUY hanya bisa ditutup jika mendeteksi sinyal display_sell murni
         elif df.at[i, 'display_sell'] and active_trade is not None:
-            profit_pct = ((df.at[i, 'close'] - active_trade['entry_price']) / active_trade['entry_price']) * 100
+            # Tutup posisi menggunakan pasangan SELL murninya
+            profit_pct = ((df.at[i, 'close'] - active_trade['Harga Entry ($)']) / active_trade['Harga Entry ($)']) * 100
             
-            # Buat record penutupan posisi SELL pasangannya
-            active_trade['waktu_exit'] = df.at[i, 'date'].strftime('%Y-%m-%d %H:%M'),
-            # Jika datanya bertipe tuple, ekstrak nilai string pertamanya agar rapi di tabel
-            if isinstance(active_trade['waktu_exit'], tuple):
-                active_trade['waktu_exit'] = active_trade['waktu_exit'][0]
-                
-            active_trade['exit_price'] = df.at[i, 'close']
-            active_trade['status'] = "🔴 SELL (Exit Sinyal)"
-            active_trade['profit_pct'] = profit_pct * leverage
-            active_trade['profit_usd'] = (active_trade['profit_pct'] / 100) * modal_awal
+            active_trade['Waktu Exit (SELL)'] = df.at[i, 'date'].strftime('%Y-%m-%d %H:%M')
+            active_trade['Harga Exit ($)'] = round(df.at[i, 'close'], 2)
+            active_trade['Status'] = "🎯 Selesai"
+            active_trade['Profit (%)'] = round(profit_pct * leverage, 2)
+            active_trade['Profit ($ USD)'] = round((active_trade['Profit (%)'] / 100) * modal_awal, 2)
             
             trades_list.append(active_trade)
             active_trade = None
 
-    # Jika trade paling akhir saat ini statusnya masih running, masukkan juga ke list tabel
+    # Jika transaksi terakhir masih berjalan (belum ada sinyal SELL)
     if active_trade is not None:
         trades_list.append(active_trade)
 
-    # Rekap data papan skor metrik atas
-    total_trades_done = [t for t in trades_list if t['status'] != "Berjalan (Running)"]
+    # Rekap data metrik atas
+    total_trades_done = [t for t in trades_list if t['Status'] != "Berjalan (Running)"]
     win_rate = 0
-    total_profit_pct = sum([t['profit_pct'] for t in total_trades_done])
+    total_profit_pct = sum([t['Profit (%)'] for t in total_trades_done])
     estimasi_profit_usd = (total_profit_pct / 100) * modal_awal
 
     if len(total_trades_done) > 0:
-        wins = len([t for t in total_trades_done if t['profit_pct'] > 0])
+        wins = len([t for t in total_trades_done if t['Profit (%)'] > 0])
         win_rate = (wins / len(total_trades_done)) * 100
 
     current_price = df.iloc[-1]['close']
@@ -157,18 +143,11 @@ try:
     df_signals = df[df['display_buy'] | df['display_sell']]
     if not df_signals.empty:
         last_row = df_signals.iloc[-1]
-        if last_row['display_buy']:
-            status_sinyal = "🟢 BUY (Masuk Posisi)"
-            waktu_sinyal = last_row['date'].strftime('%Y-%m-%d %H:%M')
-            harga_sinyal = f"${last_row['close']:,.2f}"
-        else:
-            status_sinyal = "🔴 EXIT / SELL (Keluar)"
-            waktu_sinyal = last_row['date'].strftime('%Y-%m-%d %H:%M')
-            harga_sinyal = f"${last_row['close']:,.2f}"
+        status_sinyal = "🟢 BUY (Masuk Posisi)" if last_row['display_buy'] else "🔴 EXIT / SELL (Keluar)"
+        waktu_sinyal = last_row['date'].strftime('%Y-%m-%d %H:%M')
+        harga_sinyal = f"${last_row['close']:,.2f}"
     else:
-        status_sinyal = "⚪ Belum Ada Sinyal"
-        waktu_sinyal = "-"
-        harga_sinyal = "-"
+        status_sinyal, waktu_sinyal, harga_sinyal = "⚪ Belum Ada Sinyal", "-", "-"
 
     # --- PAPAN METRIK UTAMA ---
     m1, m2, m3, m4 = st.columns(4)
@@ -202,30 +181,28 @@ try:
             mode='lines', line=dict(color=line_color, width=3), showlegend=False, hoverinfo='skip'
         ))
     
-    # Penempatan Penanda Sinyal Grafik (Mengikuti nilai hma persis seperti lekukan Pine Script)
+    # Penempatan Sinyal Grafik Melekat Persis di Atas Garis HHMA
     buy_markers = df_plot[df_plot['display_buy']]
     sell_markers = df_plot[df_plot['display_sell']]
     
     fig.add_trace(go.Scatter(
-        x=buy_markers['date'], y=buy_markers['hma'].shift(1), mode='markers',
+        x=buy_markers['date'], y=buy_markers['hma'], mode='markers',
         name='Sinyal BUY', marker=dict(symbol='triangle-up', size=14, color='#00e676', line=dict(width=1, color='white'))
     ))
     
     fig.add_trace(go.Scatter(
-        x=sell_markers['date'], y=sell_markers['hma'].shift(1), mode='markers',
+        x=sell_markers['date'], y=sell_markers['hma'], mode='markers',
         name='Sinyal EXIT', marker=dict(symbol='triangle-down', size=14, color='#ff1744', line=dict(width=1, color='white'))
     ))
     
     fig.update_layout(height=600, xaxis_rangeslider_visible=False, template="plotly_dark", margin=dict(l=10, r=10, t=10, b=10))
     st.plotly_chart(fig, use_container_width=True)
 
-    # --- TABEL RIWAYAT TRANSAKSI RESMI (TERBARU DI ATAS) ---
+    # --- TABEL RIWAYAT TRANSAKSI BERPASANGAN (TERBARU DI ATAS) ---
     if trades_list:
-        st.subheader("📜 Riwayat Transaksi Backtest")
+        st.subheader("📜 Riwayat Transaksi Jurnal Backtest")
         df_trades_report = pd.DataFrame(trades_list)
-        cols_order = ['waktu_entry', 'jenis', 'entry_price', 'waktu_exit', 'exit_price', 'status', 'profit_pct', 'profit_usd']
-        df_trades_report = df_trades_report.reindex(columns=[c for c in cols_order if c in df_trades_report.columns])
-        st.dataframe(df_trades_report.iloc[::-1], use_container_width=True)
+        st.dataframe(df_trades_report.iloc[::-1], use_container_width=True, hide_index=True)
 
 except Exception as e:
     st.error(f"Terjadi kesalahan teknis sistem: {e}")
