@@ -11,7 +11,7 @@ st.title("🛡️ HHMA Renko 400 BTC - Algoritma Filter Berlapis (Maksimal Akura
 
 # --- SISTEM PENGUNCI SETELAN ANTI REFRESH ---
 query_params = st.query_params
-default_tf = query_params.get("tf", "5 Menit (5m)")  # Default diubah ke menit
+default_tf = query_params.get("tf", "5 Menit (5m)")  
 default_src = query_params.get("src", "Close (Penutupan)")
 try:
     default_len = int(query_params.get("len", "19"))  
@@ -21,7 +21,6 @@ except:
 # Panel Menu Pengaturan Utama
 col1, col2, col3, col4 = st.columns(4)
 with col1:
-    # PERBAIKAN: Menambahkan opsi timeframe per menit sesuai limitasi yfinance
     tf_options = ["1 Hari (Daily)", "4 Jam (4h)", "1 Jam (1h)", "15 Menit (15m)", "5 Menit (5m)", "1 Menit (1m)"]
     tf_index = tf_options.index(default_tf) if default_tf in tf_options else 4
     tf_pilihan = st.selectbox("Jangka Waktu (Timeframe):", options=tf_options, index=tf_index)
@@ -50,7 +49,6 @@ st.query_params.update(tf=tf_pilihan, src=src_pilihan, len=str(length_hma))
 src_map = {"Close (Penutupan)": "close", "Open (Pembukaan)": "open", "High (Tertinggi)": "high", "Low (Terendah)": "low"}
 src_aktif = src_map[src_pilihan]
 
-# PERBAIKAN: Pemetaan interval dan period yang disesuaikan dengan aturan API Yahoo Finance
 interval_map = {
     "1 Hari (Daily)": "1d", "4 Jam (4h)": "4h", "1 Jam (1h)": "1h",
     "15 Menit (15m)": "15m", "5 Menit (5m)": "5m", "1 Menit (1m)": "1m"
@@ -65,7 +63,17 @@ def get_crypto_data(p, i):
     ticker = yf.Ticker("BTC-USD")
     df = ticker.history(period=p, interval=i)
     df = df.reset_index()
-    df = df.rename(columns={'Date': 'date', 'Datetime': 'date', 'Open': 'open', 'High': 'high', 'Low': 'low', 'Close': 'close', 'Volume': 'volume'})
+    
+    # PERBAIKAN ZONA WAKTU: Rename kolom tanggal awal sebelum konversi waktu lokal HP
+    if 'Date' in df.columns:
+        df = df.rename(columns={'Date': 'date'})
+    elif 'Datetime' in df.columns:
+        df = df.rename(columns={'Datetime': 'date'})
+        
+    # Mengonversi waktu server global (UTC) menjadi waktu lokal setempat sesuai HP Anda
+    df['date'] = pd.to_datetime(df['date']).dt.tz_convert(None)
+    
+    df = df.rename(columns={'Open': 'open', 'High': 'high', 'Low': 'low', 'Close': 'close', 'Volume': 'volume'})
     return df
 
 try:
@@ -87,7 +95,6 @@ try:
     df['raw_buy'] = df['is_green'] & (~df['is_green'].shift(1).fillna(False))
     df['raw_sell'] = (~df['is_green']) & df['is_green'].shift(1).fillna(False)
 
-    # Filter Dioptimalkan untuk Karakter Volatilitas Menit (Scalping)
     df['high_accuracy_buy'] = (df['raw_buy'] & (df['close'] > df['ema_200'] * 1.001) & (df['rsi'] > 42) & (df['rsi'] < 62) & (df['atr'] > df['atr_ma'] * 0.9) & (df['volume'] > df['volume_ma'] * 0.85))
     df['high_accuracy_sell'] = (df['raw_sell'] & (df['close'] < df['ema_200'] * 0.999) & (df['rsi'] > 38) & (df['rsi'] < 58) & (df['atr'] > df['atr_ma'] * 0.9) & (df['volume'] > df['volume_ma'] * 0.85))
 
@@ -249,13 +256,16 @@ try:
     fig.update_layout(height=650, xaxis_rangeslider_visible=False, template="plotly_dark", margin=dict(l=10, r=10, t=10, b=10))
     st.plotly_chart(fig, use_container_width=True)
 
-    # Tampilkan tabel data transaksi resmi
+    # --- TABEL RIWAYAT TRANSAKSI RESMI ---
     if trades_list:
         st.subheader("📜 Riwayat Transaksi Backtest")
         df_trades_report = pd.DataFrame(trades_list)
         cols_order = ['waktu_entry', 'jenis', 'entry_price', 'target_tp', 'target_sl', 'status', 'profit_pct', 'profit_usd']
         df_trades_report = df_trades_report.reindex(columns=[c for c in cols_order if c in df_trades_report.columns])
-        st.dataframe(df_trades_report, use_container_width=True)
+        
+        # PERBAIKAN TABEL: Membalik urutan data (Invert Index) agar transaksi terbaru berada di baris paling atas
+        df_inverted = df_trades_report.iloc[::-1]
+        st.dataframe(df_inverted, use_container_width=True)
 
 except Exception as e:
     st.error(f"Terjadi kesalahan teknis sistem: {e}")
