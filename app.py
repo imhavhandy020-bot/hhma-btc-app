@@ -11,18 +11,18 @@ st.title("🛡️ HHMA Renko 400 BTC - Algoritma Filter Berlapis (Maksimal Akura
 
 # --- SISTEM PENGUNCI SETELAN ANTI REFRESH ---
 query_params = st.query_params
-default_tf = query_params.get("tf", "1 Jam (1h)")  
+default_tf = query_params.get("tf", "4 Jam (4h)")  
 default_src = query_params.get("src", "Close (Penutupan)")
 try:
-    default_len = int(query_params.get("len", "19"))  
+    default_len = int(query_params.get("len", "20"))  
 except:
-    default_len = 19
+    default_len = 20
 
 # Panel Menu Pengaturan Utama
 col1, col2, col3, col4 = st.columns(4)
 with col1:
     tf_options = ["1 Hari (Daily)", "4 Jam (4h)", "1 Jam (1h)"]
-    tf_index = tf_options.index(default_tf) if default_tf in tf_options else 2
+    tf_index = tf_options.index(default_tf) if default_tf in tf_options else 1
     tf_pilihan = st.selectbox("Jangka Waktu (Timeframe):", options=tf_options, index=tf_index)
 with col2:
     src_options = ["Close (Penutupan)", "Open (Pembukaan)", "High (Tertinggi)", "Low (Terendah)"]
@@ -31,18 +31,20 @@ with col2:
 with col3:
     length_hma = st.slider("Panjang HMA (Length):", min_value=2, max_value=50, value=default_len, step=1)
 with col4:
-    jumlah_tampilan = st.slider("Jumlah Lilin di Layar:", min_value=10, max_value=300, value=150, step=10)
+    jumlah_tampilan = st.slider("Jumlah Lilin di Layar:", min_value=10, max_value=300, value=100, step=10)
 
 # --- PANEL KALKULATOR MODAL & TARGET (SIDEBAR) ---
 st.sidebar.header("💰 Pengaturan Kalkulator Finansial")
 modal_awal = st.sidebar.number_input("Modal Trading Anda ($ USD):", min_value=10, value=1000, step=100)
 leverage = st.sidebar.slider("Leverage (Multiplier):", min_value=1, max_value=50, value=1, step=1)
 
+# PERBAIKAN: Input target TP/SL dinamis dari pengguna via Sidebar
 st.sidebar.markdown("---")
 st.sidebar.header("🎯 Target Manajemen Risiko")
 tp_persen = st.sidebar.number_input("Target Take Profit (TP %):", min_value=0.1, max_value=20.0, value=4.5, step=0.1)
 sl_persen = st.sidebar.number_input("Target Stop Loss (SL %):", min_value=0.1, max_value=20.0, value=1.5, step=0.1)
 
+# Konversi persentase input menjadi multiplier aritmatika
 target_tp = 1.0 + (tp_persen / 100)
 target_sl = 1.0 - (sl_persen / 100)
 
@@ -74,15 +76,14 @@ try:
     df['rsi'] = ta.rsi(df['close'], length=14)        
     df['atr'] = ta.atr(df['high'], df['low'], df['close'], length=14) 
     df['atr_ma'] = ta.sma(df['atr'], length=20)
-    df['volume_ma'] = ta.sma(df['volume'], length=20)
     
     df['is_green'] = df['hma'] >= df['hma'].shift(1)
     df['raw_buy'] = df['is_green'] & (~df['is_green'].shift(1).fillna(False))
     df['raw_sell'] = (~df['is_green']) & df['is_green'].shift(1).fillna(False)
 
-    # Filter Akurasi Maksimal
-    df['high_accuracy_buy'] = (df['raw_buy'] & (df['close'] > df['ema_200'] * 1.005) & (df['rsi'] > 45) & (df['rsi'] < 58) & (df['atr'] > df['atr_ma']) & (df['volume'] > df['volume_ma']))
-    df['high_accuracy_sell'] = (df['raw_sell'] & (df['close'] < df['ema_200'] * 0.995) & (df['rsi'] > 42) & (df['rsi'] < 55) & (df['atr'] > df['atr_ma']) & (df['volume'] > df['volume_ma']))
+    # --- EKSEKUSI FILTER LEVEL TINGGI (ULTRA SHIELD) ---
+    df['high_accuracy_buy'] = df['raw_buy'] & (df['close'] > df['ema_200']) & (df['rsi'] < 60) & (df['atr'] > df['atr_ma'])
+    df['high_accuracy_sell'] = df['raw_sell'] & (df['close'] < df['ema_200']) & (df['rsi'] > 40) & (df['atr'] > df['atr_ma'])
 
     df['buy_signal'] = False
     df['sell_signal'] = False
@@ -95,6 +96,9 @@ try:
         elif df.at[i, 'high_accuracy_sell'] and last_signal != -1:
             df.at[i, 'sell_signal'] = True
             last_signal = -1
+
+    df['display_buy'] = df['buy_signal']
+    df['display_sell'] = df['sell_signal']
 
     # --- MATRIKS BACKTEST PRESISI UTAMA ---
     trades_list = []  
@@ -154,6 +158,7 @@ try:
 
     current_price = df.iloc[-1]['close']
     
+    # Deteksi otomatis sinyal terakhir untuk ditaruh di papan metrik
     df_signals = df[df['buy_signal'] | df['sell_signal']]
     if not df_signals.empty:
         last_row = df_signals.iloc[-1]
@@ -180,45 +185,6 @@ try:
         st.metric(label="Waktu Sinyal Terakhir", value=waktu_sinyal)
     with m4:
         st.metric(label="Win Rate & Estimasi Profit", value=f"{win_rate:.1f}%", delta=f"${estimasi_profit_usd:+,.2f} ({total_profit_pct:+.1f}%)")
-
-    # --- VISUALISASI GRAFIK UTAMA CANDLESTICK (PLOTLY) ---
-    st.subheader("📈 Grafik Analisis Multi-Indikator Live")
-    
-    # Filter lilin yang akan ditampilkan ke layar berdasarkan slider input
-    df_plot = df.iloc[-jumlah_tampilan:].copy()
-    
-    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.05, row_heights=[0.7, 0.3])
-    
-    # 1. Candlestick Utama
-    fig.add_trace(go.Candlestick(
-        x=df_plot['date'], open=df_plot['open'], high=df_plot['high'], low=df_plot['low'], close=df_plot['close'],
-        name="Bitcoin (BTC)", increasing_line_color='#26a69a', decreasing_line_color='#ef5350'
-    ), row=1, col=1)
-    
-    # 2. Garis HHMA & EMA 200
-    fig.add_trace(go.Scatter(x=df_plot['date'], y=df_plot['hma'], name=f"HHMA ({length_hma})", line=dict(color='#ffeb3b', width=2)), row=1, col=1)
-    fig.add_trace(go.Scatter(x=df_plot['date'], y=df_plot['ema_200'], name="EMA 200", line=dict(color='#e91e63', width=1.5, dash='dash')), row=1, col=1)
-    
-    # 3. Plot Marker Sinyal Buy / Sell
-    buy_markers = df_plot[df_plot['buy_signal']]
-    sell_markers = df_plot[df_plot['sell_signal']]
-    
-    fig.add_trace(go.Scatter(
-        x=buy_markers['date'], y=buy_markers['low'] * 0.99, mode='markers',
-        name='Sinyal BUY', marker=dict(symbol='triangle-up', size=14, color='#00e676', line=dict(width=1, color='white'))
-    ), row=1, col=1)
-    
-    fig.add_trace(go.Scatter(
-        x=sell_markers['date'], y=sell_markers['high'] * 1.01, mode='markers',
-        name='Sinyal EXIT', marker=dict(symbol='triangle-down', size=14, color='#ff1744', line=dict(width=1, color='white'))
-    ), row=1, col=1)
-    
-    # 4. Indikator Pembantu (RSI) di Subplot Bawah
-    fig.add_trace(go.Scatter(x=df_plot['date'], y=df_plot['rsi'], name="RSI (14)", line=dict(color='#29b6f6', width=1.5)), row=2, col=1)
-    fig.add_shape(type="line", x0=df_plot['date'].iloc[0], y0=50, x1=df_plot['date'].iloc[-1], y1=50, line=dict(color="gray", width=1, dash="dot"), row=2, col=1)
-    
-    fig.update_layout(height=650, xxaxis_rangeslider_visible=False, template="plotly_dark", margin=dict(l=10, r=10, t=10, b=10))
-    st.plotly_chart(fig, use_container_width=True)
 
     # Tampilkan tabel data transaksi
     if trades_list:
