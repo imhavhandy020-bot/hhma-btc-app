@@ -21,7 +21,6 @@ def init_db():
             pair TEXT, type TEXT, price REAL, amount REAL, time TEXT, mode TEXT
         )
     """)
-    # Buat tabel saldo virtual jika belum ada
     cursor.execute("CREATE TABLE IF NOT EXISTS virtual_wallet (balance REAL, coin_balance REAL)")
     cursor.execute("SELECT count(*) FROM virtual_wallet")
     if cursor.fetchone()[0] == 0:
@@ -42,8 +41,9 @@ def load_setting(key, default_value):
     cursor.execute("SELECT value FROM settings WHERE key = ?", (key,))
     row = cursor.fetchone()
     conn.close()
-    if row:
-        val = row
+    if row and row[0] is not None:
+        # PERBAIKAN UTAMA: Ambil elemen indeks 0 dan konversi ke teks String agar aman dari AttributeError
+        val = str(row[0])
         if val.lower() == 'true': return True
         if val.lower() == 'false': return False
         try:
@@ -59,7 +59,7 @@ def get_virtual_balance():
     cursor.execute("SELECT balance, coin_balance FROM virtual_wallet")
     row = cursor.fetchone()
     conn.close()
-    return row[0], row[1]
+    return row if row else (10000000.0, 0.0)
 
 def update_virtual_balance(idr, coin):
     conn = sqlite3.connect("indodax_sim_final.db")
@@ -206,7 +206,6 @@ with col_right:
     buy_amount_idr = st.number_input("Initial Purchase ($ / IDR)", value=int(load_setting("buy_amount_idr", 50000)))
     trading_fee = st.number_input("Trading Fee (%)", value=float(load_setting("trading_fee", 0.30)))
     
-    # PARAMETER MODE EKSEKUSI (LOCK REFRESH)
     saved_mode = load_setting("execution_mode", "Simulasi / Testnet")
     mode_index = 0 if saved_mode == "Simulasi / Testnet" else 1
     execution_mode = st.radio("Mode Eksekusi", ["Simulasi / Testnet", "Live Real Trading"], index=mode_index)
@@ -283,7 +282,6 @@ if execution_mode == "Live Real Trading":
     else:
         st.info("💡 Masukkan API Key & Secret Key untuk live trading.")
 else:
-    # Tampilan Saldo Virtual untuk Mode Simulasi
     st.info("🎮 Anda sedang berada dalam MODE SIMULASI (Menggunakan Saldo Demo Lokal)")
     cm1, cm2 = st.columns(2)
     cm1.metric(label="Saldo Rupiah Virtual (IDR)", value=f"Rp {v_idr:,.0f}")
@@ -315,7 +313,6 @@ if df_data is not None:
     
     st.line_chart(df_display[['Close', 'HMA', 'EMA']])
     
-    # Logika Crossover
     is_cross_over = (previous['HMA'] <= previous['EMA']) and (latest['HMA'] > latest['EMA'])
     is_cross_under = (previous['HMA'] >= previous['EMA']) and (latest['HMA'] < latest['EMA'])
     volume_confirmed = latest['Volume'] > latest['Vol_MA']
@@ -331,14 +328,12 @@ if df_data is not None:
         st.success("🔥 Sinyal BUY Valid Terdeteksi!")
         if st.session_state.autopilot:
             if execution_mode == "Live Real Trading" and api_key and secret_key:
-                # Beli Asli
                 order_params = {'pair': pair, 'type': 'buy', 'idr': int(buy_amount_idr)}
                 res, msg = indodax_private_api(api_key, secret_key, "trade", order_params)
                 if msg == "Sukses":
                     log_trade(pair, "buy", latest['Close'], buy_amount_idr / latest['Close'], execution_mode)
                     st.rerun()
             elif execution_mode == "Simulasi / Testnet":
-                # Beli Simulasi
                 if v_idr >= buy_amount_idr:
                     new_idr = v_idr - buy_amount_idr
                     bought_coin = buy_amount_idr / latest['Close']
@@ -360,7 +355,6 @@ if df_data is not None:
             st.error("🚨 Sinyal SELL / Stop Loss ATR Terpicu!")
             if st.session_state.autopilot:
                 if execution_mode == "Live Real Trading" and api_key and secret_key:
-                    # Jual Asli
                     coin_name = pair.split('_')[0]
                     sisa_koin = balance_data['balance'].get(coin_name, 0)
                     if float(sisa_koin) > 0:
@@ -370,7 +364,6 @@ if df_data is not None:
                             log_trade(pair, "sell", latest['Close'], float(sisa_koin), execution_mode)
                             st.rerun()
                 elif execution_mode == "Simulasi / Testnet":
-                    # Jual Simulasi
                     if v_coin > 0:
                         revenue = v_coin * latest['Close']
                         new_idr = v_idr + revenue
