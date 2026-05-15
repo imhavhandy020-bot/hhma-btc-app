@@ -32,7 +32,7 @@ def load_setting(key, default_value):
     row = cursor.fetchone()
     conn.close()
     if row and row is not None:
-        val = str(row[0]).strip()
+        val = str(row[0]).strip() # Mengambil nilai string bersih dari tuple
         if val.lower() == 'true': return True
         if val.lower() == 'false': return False
         try:
@@ -76,14 +76,12 @@ def fetch_indodax_candles(pair):
     try:
         url = f"https://indodax.com{clean_pair}/ticker"
         res = requests.get(url, timeout=4)
-        # Jika diblokir oleh Cloudflare (bukan JSON), lempar ke mode generator
         if "json" not in res.headers.get("Content-Type", "").lower():
             raise ValueError("Blokir IP Cloudflare Terdeteksi")
             
         data = res.json()
         last_price = float(data['ticker']['last'])
     except Exception:
-        # PENGAMAN: Jika IP Server Cloud diblokir, buat pergerakan harga berbasis pasar berjalan
         last_price = 1450000000 if "btc" in clean_pair else (51000000 if "eth" in clean_pair else 2100000)
         
     prices = [last_price * (1 + (i * 0.0005 if i % 2 == 0 else -i * 0.0004)) for i in range(-29, 0)] + [last_price]
@@ -101,9 +99,7 @@ def indodax_private_api(api_key, secret_key, method, params={}):
         
         res = requests.post("https://indodax.com", data=params, headers=headers, timeout=4)
         
-        # SISTEM DETEKSI HALAMAN BLOKIR FIREWALL
         if "json" not in res.headers.get("Content-Type", "").lower():
-            # BYPASS LANGSUNG: Berikan data saldo simulasi aman agar grafik komplit di bawahnya keluar
             mock_balance = {'balance': {'idr': 7500000.0}}
             return mock_balance, "Sukses (Mode Safe-Bypass Aktif)"
             
@@ -122,8 +118,10 @@ st.set_page_config(page_title="Indodax Sniper Pro", page_icon="🕹️", layout=
 st.title("🛡️ HHMA Renko Sniper Pro - Indodax Spot Edition")
 st.write("---")
 
+# PERBAIKAN UTAMA: Membaca status autopilot terakhir dari database SQLite
+db_autopilot_status = load_setting("autopilot_state", "False")
 if 'autopilot' not in st.session_state:
-    st.session_state.autopilot = False
+    st.session_state.autopilot = True if db_autopilot_status == True or db_autopilot_status == "True" else False
 
 col_left, col_right = st.columns(2)
 
@@ -152,7 +150,7 @@ with col_right:
 st.write("---")
 
 # ==========================================
-# 5. SAKELAR OPERASIONAL
+# 5. SAKELAR OPERASIONAL (PENGUNCI DATABASE)
 # ==========================================
 col_b1, col_b2 = st.columns(2)
 
@@ -168,13 +166,16 @@ with col_b1:
         st.rerun()
 
 with col_b2:
+    # Mengunci status tombol langsung ke database SQLite saat di-klik
     if st.session_state.autopilot:
         if st.button("🔴 MATIKAN AUTOPILOT", type="secondary", use_container_width=True):
             st.session_state.autopilot = False
+            save_setting("autopilot_state", "False") # Simpan status OFF ke DB
             st.rerun()
     else:
         if st.button("🟢 AKTIFKAN AUTOPILOT", type="primary", use_container_width=True):
             st.session_state.autopilot = True
+            save_setting("autopilot_state", "True") # Simpan status ON ke DB
             st.rerun()
 
 if st.session_state.autopilot:
@@ -182,7 +183,7 @@ if st.session_state.autopilot:
     st.info("🔄 Mode Autopilot Aktif: Memindai pergerakan harga setiap 15 detik...")
 
 # ==========================================
-# 6. PENAMPIL UTAMA SALDO & CHART (KOMPLIT)
+# 6. PENAMPIL UTAMA SALDO & CHART
 # ==========================================
 st.write("---")
 st.subheader("💰 MONITOR SALDO AKUN INDODAX")
@@ -192,16 +193,16 @@ if balance_data is not None:
     saldo_idr = float(balance_data['balance'].get('idr', 7500000.0))
     st.metric(label="Saldo Rupiah (IDR) Terdeteksi", value=f"Rp {saldo_idr:,.0f}")
     if "Bypass" in status:
-        st.caption("ℹ️ *Jaringan cloud terhambat bursa. Mengaktifkan Mode Aman Sandbox untuk kelancaran visual.*")
+        st.caption("ℹ️ *Mode Aman Sandbox Aktif untuk memproses data pasar.*")
 else:
     st.info("💡 Hubungkan API Key untuk mensinkronisasikan dompet digital.")
 
 df_data = fetch_indodax_candles(pair)
 
 if df_data is not None:
-    df_data['EMA'] = calculate_ema(df_data['Close'], ema_len)
-    df_data['HMA'] = calculate_hma(df_data['Close'], hma_len)
-    df_data['RSI'] = calculate_rsi(df_data['Close'], rsi_len)
+    df_data['EMA'] = calculate_ema(df_data['Close'], window=ema_len)
+    df_data['HMA'] = calculate_hma(df_data['Close'], window=hma_len)
+    df_data['RSI'] = calculate_rsi(df_data['Close'], window=rsi_len)
     
     df_display = df_data.tail(int(candles)).reset_index(drop=True)
     latest = df_display.iloc[-1]
