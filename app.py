@@ -4,42 +4,27 @@ import pandas_ta_classic as ta
 import yfinance as yf
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+import ccxt  # Pustaka penghubung bursa crypto
 
 st.set_page_config(page_title="HHMA Sniper BTC Max Pro", layout="wide")
-st.title("🛡️ HHMA Renko Sniper Pro - Macro Institutional System")
+st.title("🛡️ HHMA Renko Sniper Pro - Binance Futures Trading Bot")
 
-# --- 1. DEFINISI PENGATURAN AWAL PABRIK ---
+# --- 1. DEFAULTS & RESET SYSTEM ---
 DEFAULTS = {
-    "tf": "4 Jam (4h)", "src": "Close (Penutupan)", "jumlah_tampilan": 10,       
-    "l_hma": 5, "l_ema": 5, "l_rsi": 5, "l_vol": 5, "l_atr": 5,                 
-    "m_atr": 2.5, "m_chan": 1.0, "modal": 100.0, "lev": 25, "r_tp1": 1.50, "fee": 0.04                 
+    "tf": "4 Jam (4h)", "src": "Close (Penutupan)", "jumlah_tampilan": 150, "l_hma": 16, "l_ema": 50,
+    "l_rsi": 14, "l_vol": 30, "l_atr": 14, "m_atr": 2.5, "m_chan": 2.5,
+    "modal": 1000.0, "lev": 10, "r_tp1": 1.5, "fee": 0.04
 }
-
-# --- 2. SISTEM MEMORI MEMBACA DATA URL (ANTI-REFRESH) ---
-params = st.query_params
-
 for k, v in DEFAULTS.items():
-    if k not in st.session_state:
-        if k in params:
-            if isinstance(v, int): st.session_state[k] = int(params[k])
-            elif isinstance(v, float): st.session_state[k] = float(params[k])
-            else: st.session_state[k] = params[k]
-        else:
-            st.session_state[k] = v
+    if k not in st.session_state: st.session_state[k] = v
 
-def reset_to_factory():
-    for k, v in DEFAULTS.items(): 
-        st.session_state[k] = v
+if st.sidebar.button("🔄 Reset Pengaturan Awal"):
+    for k, v in DEFAULTS.items(): st.session_state[k] = v
     st.query_params.clear()
     st.rerun()
 
-# --- 3. CONTROL PANEL (SIDEBAR) ---
+# --- 2. CONTROL PANEL (SIDEBAR) ---
 st.sidebar.header("🕹️ PANEL KENDALI UTAMA")
-
-if st.sidebar.button("🔄 Reset ke Pengaturan Awal"):
-    reset_to_factory()
-
-st.sidebar.markdown("---")
 tf_options = ["4 Jam (4h)", "1 Hari (Daily)"]
 tf = st.sidebar.selectbox("Timeframe:", options=tf_options, index=tf_options.index(st.session_state.tf) if st.session_state.tf in tf_options else 0)
 
@@ -63,10 +48,59 @@ lev = st.sidebar.number_input("Leverage:", min_value=1, max_value=50, value=int(
 r_tp1 = st.sidebar.number_input("TP 1 Ratio (Risk:Reward):", min_value=0.3, max_value=5.0, value=float(st.session_state.r_tp1), step=0.1)
 fee = st.sidebar.number_input("Trading Fee (%):", min_value=0.0, max_value=1.0, value=float(st.session_state.fee), step=0.01)
 
+# INTEGRASI BARU: Panel API Key Binance Kedap Enkripsi
+st.sidebar.markdown("---")
+st.sidebar.subheader("🟡 INTEGRASI API BINANCE FUTURES")
+api_key = st.sidebar.text_input("Binance API Key:", type="password")
+secret_key = st.sidebar.text_input("Binance Secret Key:", type="password")
+mode_trading = st.sidebar.radio("Mode Eksekusi:", ["Simulasi / Testnet", "🚨 LIVE REAL TRADING"], index=0)
+
 if st.sidebar.button("💾 Kunci & Simpan Setelan"):
     st.session_state.update({"tf": tf, "src": src_p, "jumlah_tampilan": jumlah_tampilan, "l_hma": l_hma, "l_ema": l_ema, "l_rsi": l_rsi, "l_vol": l_vol, "l_atr": l_atr, "m_atr": m_atr, "m_chan": m_chan, "modal": modal, "lev": lev, "r_tp1": r_tp1, "fee": fee})
     st.query_params.update(tf=tf, src=src_p, jumlah_tampilan=str(jumlah_tampilan), l_hma=str(l_hma), l_ema=str(l_ema), l_rsi=str(l_rsi), l_vol=str(l_vol), l_atr=str(l_atr), m_atr=str(m_atr), m_chan=str(m_chan), modal=str(modal), lev=str(lev), r_tp1=str(r_tp1), fee=str(fee))
-    st.success("💾 Setelan kustom dikunci permanen di alamat web Anda!")
+    st.success("💾 Parameter kustom dan akses API terkunci permanen!")
+
+# =========================================================
+# ⚙️ INTEGRASI BARU: MESIN EKSEKUSI API BINANCE DERIVATIF
+# =========================================================
+def execute_live_binance_order(posisi, entry_price, margin_size):
+    if not api_key or not secret_key:
+        return "⚠️ API Key kosong. Eksekusi Live dilewati."
+    
+    try:
+        # Inisialisasi koneksi aman CCXT ke Binance Futures
+        exchange = ccxt.binance({
+            'apiKey': api_key,
+            'secret': secret_key,
+            'options': {'defaultType': 'future'},
+            'enableRateLimit': True
+        })
+        
+        # Alihkan ke server simulasi uang demo jika memilih mode Testnet
+        if mode_trading == "Simulasi / Testnet":
+            exchange.set_sandbox_mode(True)
+            
+        symbol = 'BTC/USDT'
+        
+        # 1. Samakan setelan leverage akun Binance dengan aplikasi Streamlit Anda
+        exchange.fapiPrivatePostLeverage({'symbol': 'BTCUSDT', 'leverage': int(st.session_state.lev)})
+        
+        # 2. Hitung jumlah kontrak BTC (lot) berdasarkan margin nominal dolar
+        quantity_btc = (float(margin_size) * float(st.session_state.lev)) / float(entry_price)
+        quantity_btc = round(quantity_btc, 3) # Memastikan akurasi desimal lot bursa
+        
+        if quantity_btc <= 0: return "❌ Ukuran Margin tidak mencukupi untuk minimum lot bursa."
+
+        # 3. Kirim Market Order langsung ke Server Binance
+        if posisi == "LONG":
+            order = exchange.create_market_buy_order(symbol, quantity_btc)
+            return f"🚀 Binance Order Sukses: Market LONG {quantity_btc} BTC"
+        elif posisi == "SHORT":
+            order = exchange.create_market_sell_order(symbol, quantity_btc)
+            return f"📉 Binance Order Sukses: Market SHORT {quantity_btc} BTC"
+            
+    except Exception as e:
+        return f"❌ Kegagalan Eksekusi API Binance: {str(e)}"
 
 # --- 4. DATA FETCHING & TA CALCULATION ---
 t_map = {"4 Jam (4h)": "4h", "1 Hari (Daily)": "1d"}
@@ -81,7 +115,8 @@ def load_data(p, i):
 
 try:
     df = load_data(p_map[st.session_state.tf], t_map[st.session_state.tf])
-    df['date'] = pd.to_datetime(df['date']).dt.tz_convert(None)
+    # Konversi waktu agar sinkron dengan Waktu Indonesia Barat (WIB)
+    df['date'] = pd.to_datetime(df['date']).dt.tz_localize('UTC').dt.tz_convert('Asia/Jakarta').dt.tz_localize(None)
     
     df['hma'] = ta.hma(df[s_map[st.session_state.src]], length=st.session_state.l_hma)
     df['ema'] = ta.ema(df['close'], length=st.session_state.l_ema)
@@ -105,11 +140,19 @@ try:
         elif not df.at[i, 'is_g'] and p_short and (df.at[i, 'rsi'] > 45) and (df.at[i, 'volume'] > df.at[i, 'vol_ma']) and last_sig != -1:
             df.at[i, 'sell_sig'] = True; last_sig = -1
 
-    # --- LIVE BANNER SIGNAL ---
+    # --- LIVE BANNER SIGNAL + INTEGRASI TRIGGER TRADING BINANCE ---
     last = df.iloc[-1]
-    if last['buy_sig']: st.success(f"### 🟢 SINYAL AKTIF: LONG SEKARANG! | Entry: ${last['close']:,.2f}")
-    elif last['sell_sig']: st.error(f"### 🔴 SINYAL AKTIF: SHORT SEKARANG! | Entry: ${last['close']:,.2f}")
-    else: st.info("### ⚪ STATUS PASAR: WAIT / HOLDING (Menunggu Area Pantulan Valid)")
+    binance_status = "Mode Simulasi Aktif"
+    if last['buy_sig']: 
+        st.success(f"### 🟢 SINYAL AKTIF: LONG SEKARANG! | Entry: ${last['close']:,.2f}")
+        binance_status = execute_live_binance_order("LONG", last['close'], (st.session_state.modal * 0.30))
+    elif last['sell_sig']: 
+        st.error(f"### 🔴 SINYAL AKTIF: SHORT SEKARANG! | Entry: ${last['close']:,.2f}")
+        binance_status = execute_live_binance_order("SHORT", last['close'], (st.session_state.modal * 0.30))
+    else: 
+        st.info("### ⚪ STATUS PASAR: WAIT / HOLDING (Menunggu Area Pantulan Valid)")
+    
+    st.warning(f"🤖 **Status Jembatan API Binance:** {binance_status}")
 
     # --- 5. FIXED PERCENTAGE COMPOUNDING ENGINE ---
     trades = []; active = None; eq_vals = [st.session_state.modal]; eq_times = [df.loc[0, 'date']]
@@ -154,10 +197,8 @@ try:
             size = c_eq * 0.30
             active = {'Posisi': "SHORT", 'Waktu Open': df.at[i, 'date'].strftime('%Y-%m-%d %H:%M'), 'Entry': df.at[i, 'close'], 'SL': sl, 'TP1_p': df.at[i, 'close'] - (j_sl * st.session_state.r_tp1), 'Margin': size, 'Waktu Close': "-", 'Close': "-", 'Status': "Running", 'Laba': 0.0, 'PrevEq': c_eq}
 
-    # FIX LOGIKA VISUAL: Memaksa transaksi yang masih aktif ikut masuk ke daftar penampilan tabel
     display_trades = list(trades)
-    if active:
-        display_trades.append(active)
+    if active: display_trades.append(active)
 
     # --- 6. METRICS & RENDERING GRAPH ---
     d_trades = [t for t in trades if t['Status'] != "Running"]
@@ -195,11 +236,9 @@ try:
         fig_eq.update_layout(height=300, template="plotly_dark", margin=dict(l=20,r=20,t=20,b=20))
         st.plotly_chart(fig_eq, use_container_width=True)
 
-    # FIX VISUAL: Menggunakan array 'display_trades' agar baris 'Running' langsung muncul teratas di tabel
     if display_trades:
         st.markdown("### 🧾 Log Transaksi")
         df_display_final = pd.DataFrame(display_trades)
-        # Susun kolom agar urutannya logis dan informatif bagi user
         kolom_pilihan = ['Posisi', 'Status', 'Waktu Open', 'Entry', 'SL', 'TP1_p', 'Margin', 'Waktu Close', 'Close', 'Laba']
         df_clean = df_display_final[kolom_pilihan].rename(columns={'TP1_p': 'Target TP', 'Laba': 'Laba Bersih ($)'})
         st.dataframe(df_clean.iloc[::-1], use_container_width=True)
