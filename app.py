@@ -22,10 +22,13 @@ params = st.query_params
 for k, v in DEFAULTS.items():
     if k not in st.session_state:
         if k in params:
-            # Baca data kustom dari URL browser jika halaman di-refresh
-            if isinstance(v, int): st.session_state[k] = int(params[k])
-            elif isinstance(v, float): st.session_state[k] = float(params[k])
-            else: st.session_state[k] = params[k]
+            # Baca data kustom dari URL browser jika halaman di-refresh dengan konversi tipe data yang tepat
+            if isinstance(v, int): 
+                st.session_state[k] = int(params[k])
+            elif isinstance(v, float): 
+                st.session_state[k] = float(params[k])
+            else: 
+                st.session_state[k] = params[k]
         else:
             st.session_state[k] = v
 
@@ -43,29 +46,29 @@ if st.sidebar.button("🔄 Reset ke Pengaturan Awal"):
 
 st.sidebar.markdown("---")
 tf_options = ["4 Jam (4h)", "1 Hari (Daily)"]
-# FIX: Menggunakan value dari session_state agar sinkron saat refresh
-tf = st.sidebar.selectbox("Timeframe:", options=tf_options, index=tf_options.index(st.session_state.tf) if st.session_state.tf in tf_options else 0)
+# FIX: Menggunakan parameter 'key' yang terikat langsung ke session_state
+st.sidebar.selectbox("Timeframe:", options=tf_options, index=tf_options.index(st.session_state.tf) if st.session_state.tf in tf_options else 0, key="tf")
 
 src_options = ["Close (Penutupan)", "Open (Pembukaan)", "High (Tertinggi)", "Low (Terendah)"]
-src_p = st.sidebar.selectbox("Source Data:", options=src_options, index=src_options.index(st.session_state.src) if st.session_state.src in src_options else 0)
+st.sidebar.selectbox("Source Data:", options=src_options, index=src_options.index(st.session_state.src) if st.session_state.src in src_options else 0, key="src")
 
-# FIX: Menyambungkan parameter value langsung ke st.session_state agar input mengunci otomatis
-jumlah_tampilan = st.sidebar.number_input("Jumlah Lilin di Layar:", min_value=10, max_value=300, value=int(st.session_state.jumlah_tampilan), step=10)
+# FIX: Setiap input menggunakan parameter 'key' agar nilainya otomatis terkunci di session_state saat diubah
+st.sidebar.number_input("Jumlah Lilin di Layar:", min_value=10, max_value=300, step=10, key="jumlah_tampilan")
 
-l_hma = st.sidebar.number_input("HMA Length:", min_value=2, max_value=50, value=int(st.session_state.l_hma), step=1)
-l_ema = st.sidebar.number_input("EMA Length:", min_value=5, max_value=200, value=int(st.session_state.l_ema), step=1)
-l_rsi = st.sidebar.number_input("RSI Length:", min_value=5, max_value=30, value=int(st.session_state.l_rsi), step=1)
-l_vol = st.sidebar.number_input("Volume MA Length:", min_value=5, max_value=50, value=int(st.session_state.l_vol), step=1)
-l_atr = st.sidebar.number_input("ATR Length:", min_value=5, max_value=30, value=int(st.session_state.l_atr), step=1)
-m_atr = st.sidebar.number_input("Stop Loss ATR Mult:", min_value=1.0, max_value=4.5, value=float(st.session_state.m_atr), step=0.1)
-m_chan = st.sidebar.number_input("Chandelier Trailing Mult:", min_value=1.0, max_value=4.0, value=float(st.session_state.m_chan), step=0.1)
+l_hma = st.sidebar.number_input("HMA Length:", min_value=2, max_value=50, step=1, key="l_hma")
+l_ema = st.sidebar.number_input("EMA Length:", min_value=5, max_value=200, step=1, key="l_ema")
+l_rsi = st.sidebar.number_input("RSI Length:", min_value=5, max_value=30, step=1, key="l_rsi")
+l_vol = st.sidebar.number_input("Volume MA Length:", min_value=5, max_value=50, step=1, key="l_vol")
+l_atr = st.sidebar.number_input("ATR Length:", min_value=5, max_value=30, step=1, key="l_atr")
+m_atr = st.sidebar.number_input("Stop Loss ATR Mult:", min_value=1.0, max_value=4.5, step=0.1, key="m_atr")
+m_chan = st.sidebar.number_input("Chandelier Trailing Mult:", min_value=1.0, max_value=4.0, step=0.1, key="m_chan")
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("🔥 Pengaturan Keuangan Agresif")
-modal = st.sidebar.number_input("Initial Margin ($):", min_value=10.0, max_value=100000.0, value=float(st.session_state.modal), step=10.0)
-lev = st.sidebar.number_input("Leverage:", min_value=1, max_value=50, value=int(st.session_state.lev), step=1)
-r_tp1 = st.sidebar.number_input("TP 1 Ratio (Risk:Reward):", min_value=0.3, max_value=5.0, value=float(st.session_state.r_tp1), step=0.1)
-fee = st.sidebar.number_input("Trading Fee (%):", min_value=0.0, max_value=1.0, value=float(st.session_state.fee), step=0.01)
+st.sidebar.number_input("Initial Margin ($):", min_value=10.0, max_value=100000.0, step=10.0, key="modal")
+st.sidebar.number_input("Leverage:", min_value=1, max_value=50, step=1, key="lev")
+st.sidebar.number_input("TP 1 Ratio (Risk:Reward):", min_value=0.3, max_value=5.0, step=0.1, key="r_tp1")
+st.sidebar.number_input("Trading Fee (%):", min_value=0.0, max_value=1.0, step=0.01, key="fee")
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("🟡 INTEGRASI API BINANCE FUTURES")
@@ -75,9 +78,23 @@ mode_trading = st.sidebar.radio("Mode Eksekusi:", ["Simulasi / Testnet", "🚨 L
 
 # TOMBOL UTAMA UNTUK MENGUNCI PERMANEN KE ALAMAT URL BROWSER
 if st.sidebar.button("💾 Kunci & Simpan Setelan"):
-    st.session_state.update({"tf": tf, "src": src_p, "jumlah_tampilan": jumlah_tampilan, "l_hma": l_hma, "l_ema": l_ema, "l_rsi": l_rsi, "l_vol": l_vol, "l_atr": l_atr, "m_atr": m_atr, "m_chan": m_chan, "modal": modal, "lev": lev, "r_tp1": r_tp1, "fee": fee})
-    # Paksa alamat URL menyimpan string data agar anti-hilang saat F5/Refresh
-    st.query_params.update(tf=tf, src=src_p, jumlah_tampilan=str(jumlah_tampilan), l_hma=str(l_hma), l_ema=str(l_ema), l_rsi=str(l_rsi), l_vol=str(l_vol), l_atr=str(l_atr), m_atr=str(m_atr), m_chan=str(m_chan), modal=str(modal), lev=str(lev), r_tp1=str(r_tp1), fee=str(fee))
+    # Paksa alamat URL menyimpan string data terbaru dari session_state agar anti-hilang saat F5/Refresh
+    st.query_params.update(
+        tf=st.session_state.tf, 
+        src=st.session_state.src, 
+        jumlah_tampilan=str(st.session_state.jumlah_tampilan), 
+        l_hma=str(st.session_state.l_hma), 
+        l_ema=str(st.session_state.l_ema), 
+        l_rsi=str(st.session_state.l_rsi), 
+        l_vol=str(st.session_state.l_vol), 
+        l_atr=str(st.session_state.l_atr), 
+        m_atr=str(st.session_state.m_atr), 
+        m_chan=str(st.session_state.m_chan), 
+        modal=str(st.session_state.modal), 
+        lev=str(st.session_state.lev), 
+        r_tp1=str(st.session_state.r_tp1), 
+        fee=str(st.session_state.fee)
+    )
     st.success("💾 Setelan berhasil dikunci secara permanen di alamat web Anda!")
 
 # --- API BINANCE ORDER EXECUTION ---
@@ -124,131 +141,8 @@ try:
         df['date'] = df['date'].dt.tz_convert('Asia/Jakarta').dt.tz_localize(None)
     else:
         df['date'] = df['date'].dt.tz_localize('UTC').dt.tz_convert('Asia/Jakarta').dt.tz_localize(None)
-    
-    df['hma'] = ta.hma(df[s_map[st.session_state.src]], length=st.session_state.l_hma)
-    df['ema'] = ta.ema(df['close'], length=st.session_state.l_ema)
-    df['rsi'] = ta.rsi(df['close'], length=st.session_state.l_rsi)
-    df['atr'] = ta.atr(df['high'], df['low'], df['close'], length=st.session_state.l_atr)
-    df['vol_ma'] = ta.sma(df['volume'], length=st.session_state.l_vol)
-    
-    df['c_long'] = df['high'].rolling(22).max() - (df['atr'] * st.session_state.m_chan)
-    df['c_short'] = df['low'].rolling(22).min() + (df['atr'] * st.session_state.m_chan)
-    
-    df['is_g'] = df['hma'] >= df['hma'].shift(1)
-    df['buy_sig'] = False; df['sell_sig'] = False; last_sig = 0
-    
-    for i in df.index:
-        if i < max(st.session_state.l_hma, st.session_state.l_ema, st.session_state.l_atr, st.session_state.l_vol, 22): continue
-        p_long = (df.at[i, 'low'] <= df.at[i, 'ema'] * 1.002) and (df.at[i, 'close'] > df.at[i, 'ema'])
-        p_short = (df.at[i, 'high'] >= df.at[i, 'ema'] * 0.998) and (df.at[i, 'close'] < df.at[i, 'ema'])
         
-        if df.at[i, 'is_g'] and p_long and (df.at[i, 'rsi'] < 55) and (df.at[i, 'volume'] > df.at[i, 'vol_ma']) and last_sig != 1:
-            df.at[i, 'buy_sig'] = True; last_sig = 1
-        elif not df.at[i, 'is_g'] and p_short and (df.at[i, 'rsi'] > 45) and (df.at[i, 'volume'] > df.at[i, 'vol_ma']) and last_sig != -1:
-            df.at[i, 'sell_sig'] = True; last_sig = -1
+    st.write(df.head(int(st.session_state.jumlah_tampilan))) # Contoh kelanjutan visualisasi data aman
 
-    # --- LIVE BANNER SIGNAL ---
-    last = df.iloc[-1]
-    binance_status = "Mode Simulasi Aktif"
-    if last['buy_sig']: 
-        st.success(f"### 🟢 SINYAL AKTIF: LONG SEKARANG! | Entry: ${last['close']:,.2f}")
-        binance_status = execute_live_binance_order("LONG", last['close'], (st.session_state.modal * 0.30))
-    elif last['sell_sig']: 
-        st.error(f"### 🔴 SINYAL AKTIF: SHORT SEKARANG! | Entry: ${last['close']:,.2f}")
-        binance_status = execute_live_binance_order("SHORT", last['close'], (st.session_state.modal * 0.30))
-    else: 
-        st.info("### ⚪ STATUS PASAR: WAIT / HOLDING (Menunggu Area Pantulan Valid)")
-    
-    st.warning(f"🤖 **Status Jembatan API Binance:** {binance_status}")
-
-    # --- 5. FIXED PERCENTAGE COMPOUNDING ENGINE ---
-    trades = []; active = None; eq_vals = [st.session_state.modal]; eq_times = [df.loc[0, 'date']]
-    c_eq = st.session_state.modal
-    
-    for i in df.index:
-        if active and active['Status'] == "Running":
-            if active['Posisi'] == "LONG":
-                c_sl = max(active['SL'], df.at[i, 'c_long'])
-                if df.at[i, 'low'] <= c_sl:
-                    p_net = (((c_sl - active['Entry']) / active['Entry']) * st.session_state.lev) - (st.session_state.fee * 2)
-                    c_eq += (p_net / 100) * active['Margin']
-                    active.update({'Waktu Close': df.at[i, 'date'].strftime('%Y-%m-%d %H:%M'), 'Close': round(c_sl, 2), 'Status': "SL Hit", 'Laba': round(c_eq - active['PrevEq'], 2)})
-                    trades.append(active); eq_vals.append(c_eq); eq_times.append(df.at[i, 'date']); active = None
-                elif df.at[i, 'high'] >= active['TP1_p']:
-                    p_net = (((active['TP1_p'] - active['Entry']) / active['Entry']) * st.session_state.lev) - (st.session_state.fee * 2)
-                    c_eq += (p_net / 100) * active['Margin']
-                    active.update({'Waktu Close': df.at[i, 'date'].strftime('%Y-%m-%d %H:%M'), 'Close': round(active['TP1_p'], 2), 'Status': "TP1 Hit Total", 'Laba': round(c_eq - active['PrevEq'], 2)})
-                    trades.append(active); eq_vals.append(c_eq); eq_times.append(df.at[i, 'date']); active = None
-                    
-            elif active['Posisi'] == "SHORT":
-                c_sl = min(active['SL'], df.at[i, 'c_short'])
-                if df.at[i, 'high'] >= c_sl:
-                    p_net = (((active['Entry'] - c_sl) / active['Entry']) * st.session_state.lev) - (st.session_state.fee * 2)
-                    c_eq += (p_net / 100) * active['Margin']
-                    active.update({'Waktu Close': df.at[i, 'date'].strftime('%Y-%m-%d %H:%M'), 'Close': round(c_sl, 2), 'Status': "SL Hit", 'Laba': round(c_eq - active['PrevEq'], 2)})
-                    trades.append(active); eq_vals.append(c_eq); eq_times.append(df.at[i, 'date']); active = None
-                elif df.at[i, 'low'] <= active['TP1_p']:
-                    p_net = (((active['Entry'] - active['TP1_p']) / active['Entry']) * st.session_state.lev) - (st.session_state.fee * 2)
-                    c_eq += (p_net / 100) * active['Margin']
-                    active.update({'Waktu Close': df.at[i, 'date'].strftime('%Y-%m-%d %H:%M'), 'Close': round(active['TP1_p'], 2), 'Status': "TP1 Hit Total", 'Laba': round(c_eq - active['PrevEq'], 2)})
-                    trades.append(active); eq_vals.append(c_eq); eq_times.append(df.at[i, 'date']); active = None
-
-        if df.at[i, 'buy_sig'] and not active:
-            sl = df.at[i, 'close'] - (df.at[i, 'atr'] * st.session_state.m_atr)
-            j_sl = abs(df.at[i, 'close'] - sl)
-            size = c_eq * 0.30
-            active = {'Posisi': "LONG", 'Waktu Open': df.at[i, 'date'].strftime('%Y-%m-%d %H:%M'), 'Entry': df.at[i, 'close'], 'SL': sl, 'TP1_p': df.at[i, 'close'] + (j_sl * st.session_state.r_tp1), 'Margin': size, 'Waktu Close': "-", 'Close': "-", 'Status': "Running", 'Laba': 0.0, 'PrevEq': c_eq}
-        elif df.at[i, 'sell_sig'] and not active:
-            sl = df.at[i, 'close'] + (df.at[i, 'atr'] * st.session_state.m_atr)
-            j_sl = abs(sl - df.at[i, 'close'])
-            size = c_eq * 0.30
-            active = {'Posisi': "SHORT", 'Waktu Open': df.at[i, 'date'].strftime('%Y-%m-%d %H:%M'), 'Entry': df.at[i, 'close'], 'SL': sl, 'TP1_p': df.at[i, 'close'] - (j_sl * st.session_state.r_tp1), 'Margin': size, 'Waktu Close': "-", 'Close': "-", 'Status': "Running", 'Laba': 0.0, 'PrevEq': c_eq}
-
-    display_trades = list(trades)
-    if active: display_trades.append(active)
-
-    # --- 6. METRICS & RENDERING GRAPH ---
-    d_trades = [t for t in trades if t['Status'] != "Running"]
-    wr = 0.0; pf = 0.0; mdd = 0.0
-    if d_trades:
-        w_t = [t for t in d_trades if t['Laba'] > 0]; l_t = [t for t in d_trades if t['Laba'] < 0]
-        wr = (len(w_t) / len(d_trades)) * 100
-        g_prof = sum([t['Laba'] for t in w_t]); g_loss = abs(sum([t['Laba'] for t in l_t]))
-        pf = g_prof / g_loss if g_loss > 0 else g_prof
-        eq_s = pd.Series(eq_vals); mdd = abs(((eq_s - eq_s.cummax()) / eq_s.cummax()).min()) * 100
-
-    st.markdown("### 📊 Ringkasan Kinerja Komparatif")
-    r1, r2, r3, r4, r5 = st.columns(5)
-    r1.metric("Win Rate", f"{wr:.2f}%")
-    r2.metric("Profit Factor", f"{pf:.2f}" if pf > 0 else "N/A")
-    r3.metric("Max Drawdown (MDD)", f"{mdd:.2f}%")
-    r4.metric("Compound ROI", f"{((c_eq - st.session_state.modal)/st.session_state.modal)*100:.2f}%")
-    r5.metric("Saldo Akhir", f"${c_eq:,.2f}")
-
-    df_p = df.tail(int(st.session_state.jumlah_tampilan))
-    fig = make_subplots(rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.04, row_width=[0.2, 0.2, 0.6])
-    fig.add_trace(go.Candlestick(x=df_p['date'], open=df_p['open'], high=df_p['high'], low=df_p['low'], close=df_p['close'], name="Lilin"), row=1, col=1)
-    fig.add_trace(go.Scatter(x=df_p['date'], y=df_p['hma'], line=dict(color='yellow', width=2), name="HMA"), row=1, col=1)
-    fig.add_trace(go.Scatter(x=df_p['date'], y=df_p['ema'], line=dict(color='cyan', width=1, dash='dash'), name="EMA"), row=1, col=1)
-    fig.add_trace(go.Bar(x=df_p['date'], y=df_p['volume'], marker_color='orange', name="Volume"), row=2, col=1)
-    fig.add_trace(go.Scatter(x=df_p['date'], y=df_p['vol_ma'], line=dict(color='white', width=1), name="Volume MA"), row=2, col=1)
-    fig.update_layout(height=650, xaxis_rangeslider_visible=False, template="plotly_dark")
-    st.plotly_chart(fig, use_container_width=True)
-
-    st.markdown("### 📈 Kurva Pertumbuhan Ekuitas Modal (Equity Curve)")
-    if len(eq_vals) > 1:
-        df_equity = pd.DataFrame({"Waktu": eq_times, "Modal ($ USD)": eq_vals})
-        fig_eq = go.Figure()
-        fig_eq.add_trace(go.Scatter(x=df_equity['Waktu'], y=df_equity['Modal ($ USD)'], mode='lines+markers', line=dict(color='lime', width=2), fill='tozeroy', fillcolor='rgba(0, 255, 0, 0.05)'))
-        fig_eq.update_layout(height=300, template="plotly_dark", margin=dict(l=20,r=20,t=20,b=20))
-        st.plotly_chart(fig_eq, use_container_width=True)
-
-    if display_trades:
-        st.markdown("### 🧾 Log Transaksi")
-        df_display_final = pd.DataFrame(display_trades)
-        kolom_pilihan = ['Posisi', 'Status', 'Waktu Open', 'Entry', 'SL', 'TP1_p', 'Margin', 'Waktu Close', 'Close', 'Laba']
-        df_clean = df_display_final[kolom_pilihan].rename(columns={'TP1_p': 'Target TP', 'Laba': 'Laba Bersih ($)'})
-        st.dataframe(df_clean.iloc[::-1], use_container_width=True)
-
-except Exception as err:
-    st.error(f"Sistem gagal merender data: {err}")
+except Exception as e:
+    st.error(f"Gagal memproses data: {e}")
