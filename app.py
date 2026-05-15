@@ -32,7 +32,7 @@ def load_setting(key, default_value):
     row = cursor.fetchone()
     conn.close()
     if row and row is not None:
-        val = str(row[0]).strip() # Mengambil nilai string bersih dari tuple
+        val = str(row[0]).strip() # Mengambil nilai elemen pertama string bersih dari tuple
         if val.lower() == 'true': return True
         if val.lower() == 'false': return False
         try:
@@ -118,7 +118,7 @@ st.set_page_config(page_title="Indodax Sniper Pro", page_icon="🕹️", layout=
 st.title("🛡️ HHMA Renko Sniper Pro - Indodax Spot Edition")
 st.write("---")
 
-# PERBAIKAN UTAMA: Membaca status autopilot terakhir dari database SQLite
+# Membaca status autopilot terakhir dari database SQLite agar tidak reset saat refresh
 db_autopilot_status = load_setting("autopilot_state", "False")
 if 'autopilot' not in st.session_state:
     st.session_state.autopilot = True if db_autopilot_status == True or db_autopilot_status == "True" else False
@@ -166,16 +166,15 @@ with col_b1:
         st.rerun()
 
 with col_b2:
-    # Mengunci status tombol langsung ke database SQLite saat di-klik
     if st.session_state.autopilot:
         if st.button("🔴 MATIKAN AUTOPILOT", type="secondary", use_container_width=True):
             st.session_state.autopilot = False
-            save_setting("autopilot_state", "False") # Simpan status OFF ke DB
+            save_setting("autopilot_state", "False")
             st.rerun()
     else:
         if st.button("🟢 AKTIFKAN AUTOPILOT", type="primary", use_container_width=True):
             st.session_state.autopilot = True
-            save_setting("autopilot_state", "True") # Simpan status ON ke DB
+            save_setting("autopilot_state", "True")
             st.rerun()
 
 if st.session_state.autopilot:
@@ -200,9 +199,10 @@ else:
 df_data = fetch_indodax_candles(pair)
 
 if df_data is not None:
-    df_data['EMA'] = calculate_ema(df_data['Close'], window=ema_len)
-    df_data['HMA'] = calculate_hma(df_data['Close'], window=hma_len)
-    df_data['RSI'] = calculate_rsi(df_data['Close'], window=rsi_len)
+    # PERBAIKAN UTAMA: Menggunakan parameter 'length' sesuai definisi fungsi di atas
+    df_data['EMA'] = calculate_ema(df_data['Close'], length=ema_len)
+    df_data['HMA'] = calculate_hma(df_data['Close'], length=hma_len)
+    df_data['RSI'] = calculate_rsi(df_data['Close'], length=rsi_len)
     
     df_display = df_data.tail(int(candles)).reset_index(drop=True)
     latest = df_display.iloc[-1]
