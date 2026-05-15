@@ -248,9 +248,15 @@ try:
             'status': 'Status Akhir Kondisi'
         })
         
-       # 1. Definisikan kolom dan proses data di luar fungsi st.dataframe
+       # Pastikan tidak ada kata 'try:' yang menggantung di atas baris ini
 kolom_pilihan = ['Waktu Open Posisi', 'Sinyal', 'Harga Entry', 'Status Akhir Kondisi', 'Hasil %', 'Hasil USD']
 df_tampilan = df_tabel_final[kolom_pilihan].iloc[::-1].head(5)
+
+st.dataframe(
+    df_tampilan,
+    use_container_width=True, 
+    hide_index=True
+)
 
 # 2. Masukkan hasil data yang sudah siap ke dalam st.dataframe
 st.dataframe(
