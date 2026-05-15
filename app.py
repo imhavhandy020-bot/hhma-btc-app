@@ -5,7 +5,7 @@ import yfinance as yf
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import requests
-from datetime import datetime
+import ccxt
 
 st.set_page_config(page_title="HHMA Sniper BTC Futures Max Pro", layout="wide")
 st.title("🛡️ HHMA Renko Sniper Pro - 4H Institutional System")
@@ -32,28 +32,32 @@ DEFAULTS = {
     "trading_fee_pct": 0.04,
     "session_filter_active": False,
     "start_hour": 14,
-    "end_hour": 23
+    "end_hour": 23,
+    "live_trading_active": False
 }
 
+# Inisialisasi Session State Jika Belum Terbentuk
 for key, val in DEFAULTS.items():
     if key not in st.session_state:
         st.session_state[key] = val
 
+# Fungsi Trigger Reset Mengembalikan Nilai ke Kondisi Awal
 def reset_to_defaults():
     for key, val in DEFAULTS.items():
         st.session_state[key] = val
-    st.success("🔄 Pengaturan berhasil dikembalikan ke standar awal pabrik!")
+    st.rerun()
 
 # ==========================================
-# ⚙️ PANEL SETELAN PARAMETER (SIDEBAR)
+# ⚙️ PANEL SETELAN PARAMETER (SIDEBAR - ANTI SENGGOL)
 # ==========================================
 st.sidebar.header("🕹️ PANEL KENDALI UTAMA")
 
+# Tombol Aksi Global Pengaman Aturan Standar
 col_action1, col_action2 = st.sidebar.columns(2)
 with col_action1:
-    btn_simpan = st.button("💾 Simpan Setelan", help="Mengunci parameter kustom Anda.")
+    btn_simpan = st.button("💾 Simpan Setelan", help="Mengunci parameter yang Anda ketik agar tidak hilang.")
 with col_action2:
-    st.button("🔄 Reset Standar", on_click=reset_to_defaults, help="Kembali ke rumus presisi awal.")
+    st.button("🔄 Reset Standar", on_click=reset_to_defaults, help="Mengembalikan ke rumus presisi awal pabrik.")
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("📦 1. Parameter Utama Pasar")
@@ -105,6 +109,13 @@ st.sidebar.subheader("🤖 6. Integrasi Telegram")
 telegram_token = st.sidebar.text_input("Telegram Bot Token:", type="password")
 telegram_chat_id = st.sidebar.text_input("Telegram Chat ID:")
 
+st.sidebar.markdown("---")
+st.sidebar.subheader("🟡 7. Integrasi Live Binance Futures")
+binance_api_key = st.sidebar.text_input("Binance API Key:", type="password")
+binance_secret_key = st.sidebar.text_input("Binance Secret Key:", type="password")
+live_trading_active = st.sidebar.checkbox("🚨 AKTIFKAN LIVE TRADING REAL", value=st.session_state.live_trading_active)
+
+# Sinkronisasi ke Session State saat Tombol Simpan Ditekan
 if btn_simpan:
     st.session_state.tf_pilihan = tf_pilihan
     st.session_state.src_pilihan = src_pilihan
@@ -125,23 +136,51 @@ if btn_simpan:
     st.session_state.session_filter_active = session_filter_active
     st.session_state.start_hour = start_hour
     st.session_state.end_hour = end_hour
+    st.session_state.live_trading_active = live_trading_active
     st.success("💾 Seluruh konfigurasi kustom Anda berhasil dikunci secara permanen!")
 
 # ==========================================
-# 📊 PROSES PENGOLAHAN DATA & INDIKATOR
+# 🔌 FUNGSI INTEGRASI EKSTERNAL (TELEGRAM & BINANCE)
 # ==========================================
-src_map = {"Close (Penutupan)": "close", "Open (Pembukaan)": "open", "High (Tertinggi)": "high", "Low (Terendah)": "low"}
-src_aktif = src_map[st.session_state.src_pilihan]
-
-interval_map = {"4 Jam (4h)": "4h", "1 Hari (Daily)": "1d", "1 Jam (1h)": "1h", "15 Menit (15m)": "15m"}
-period_map = {"4 Jam (4h)": "180d", "1 Hari (Daily)": "730d", "1 Jam (1h)": "90d", "15 Menit (15m)": "30d"}
-
 def send_telegram_alert(message):
     if telegram_token and telegram_chat_id:
         url = f"https://telegram.org{telegram_token}/sendMessage"
         payload = {"chat_id": telegram_chat_id, "text": message, "parse_mode": "Markdown"}
         try: requests.post(url, json=payload, timeout=5)
         except: pass
+
+def execute_binance_futures_order(posisi, margin_usd, leverage_user, harga_entry):
+    if not binance_api_key or not binance_secret_key or not live_trading_active:
+        return "Mode Simulasi Aktif (Order Real Binance Dilewati)."
+    try:
+        exchange = ccxt.binance({
+            'apiKey': binance_api_key,
+            'secret': binance_secret_key,
+            'options': {'defaultType': 'future'},
+            'enableRateLimit': True
+        })
+        symbol = 'BTC/USDT'
+        exchange.fapiPrivatePostLeverage({'symbol': 'BTCUSDT', 'leverage': int(leverage_user)})
+        quantity_btc = (float(margin_usd) * float(leverage_user)) / float(harga_entry)
+        quantity_btc = round(quantity_btc, 3)
+        if quantity_btc <= 0: return "❌ Margin tidak mencukupi untuk lot minimum."
+        
+        if posisi == "🟢 LONG (Buy)":
+            exchange.create_market_buy_order(symbol, quantity_btc)
+            return f"🚀 Live Binance Sukses: LONG {quantity_btc} BTC"
+        elif posisi == "🔴 SHORT (Sell)":
+            exchange.create_market_sell_order(symbol, quantity_btc)
+            return f"📉 Live Binance Sukses: SHORT {quantity_btc} BTC"
+    except Exception as err:
+        return f"❌ Binance API Error: {str(err)}"
+
+# ==========================================
+# 📊 AMBIL DATA & HITUNG INDIKATOR
+# ==========================================
+src_map = {"Close (Penutupan)": "close", "Open (Pembukaan)": "open", "High (Tertinggi)": "high", "Low (Terendah)": "low"}
+src_aktif = src_map[st.session_state.src_pilihan]
+interval_map = {"4 Jam (4h)": "4h", "1 Hari (Daily)": "1d", "1 Jam (1h)": "1h", "15 Menit (15m)": "15m"}
+period_map = {"4 Jam (4h)": "180d", "1 Hari (Daily)": "730d", "1 Jam (1h)": "90d", "15 Menit (15m)": "30d"}
 
 @st.cache_data(ttl=30)
 def get_crypto_data(p, i):
@@ -157,7 +196,7 @@ def get_crypto_data(p, i):
 try:
     df = get_crypto_data(period_map[st.session_state.tf_pilihan], interval_map[st.session_state.tf_pilihan])
     if df.empty:
-        st.error("Gagal mengambil data dari Yahoo Finance.")
+        st.error("Gagal memuat data pasar.")
         st.stop()
 
     df['hma'] = ta.hma(df[src_aktif], length=st.session_state.length_hma)
@@ -179,45 +218,48 @@ try:
     last_signal = 0
 
     for i in df.index:
-        if i < max(st.session_state.length_hma, st.session_state.length_ema, st.session_state.length_atr, st.session_state.length_vol_ma, st.session_state.length_rsi, 22): continue
+        if i < max(st.session_state.length_hma, st.session_state.length_ema, st.session_state.length_atr, st.session_state.length_vol_ma, st.session_state.length_rsi, 22): 
+            continue
             
         is_pullback_long = (df.at[i, 'low'] <= df.at[i, 'ema'] * 1.002) and (df.at[i, 'close'] > df.at[i, 'ema'])
         is_pullback_short = (df.at[i, 'high'] >= df.at[i, 'ema'] * 0.998) and (df.at[i, 'close'] < df.at[i, 'ema'])
-        
         rsi_safe_long = df.at[i, 'rsi'] < 55
         rsi_safe_short = df.at[i, 'rsi'] > 45
         volume_valid = df.at[i, 'volume'] > df.at[i, 'vol_ma']
-
-        # Saringan Jam Sesi Pasar Dinamis
-        time_valid = True
+        
+        # Saringan Logika Jam Sesi WIB
+        current_hour = df.at[i, 'date'].hour
         if st.session_state.session_filter_active:
-            current_hour = df.at[i, 'date'].hour
             if st.session_state.start_hour <= st.session_state.end_hour:
-                time_valid = st.session_state.start_hour <= current_hour <= st.session_state.end_hour
+                session_valid = st.session_state.start_hour <= current_hour <= st.session_state.end_hour
             else:
-                time_valid = current_hour >= st.session_state.start_hour or current_hour <= st.session_state.end_hour
+                session_valid = current_hour >= st.session_state.start_hour or current_hour <= st.session_state.end_hour
+        else:
+            session_valid = True
 
-        if df.at[i, 'is_green'] and is_pullback_long and rsi_safe_long and volume_valid and time_valid and last_signal != 1:
+        if df.at[i, 'is_green'] and is_pullback_long and rsi_safe_long and volume_valid and session_valid and last_signal != 1:
             df.at[i, 'buy_signal'] = True
             last_signal = 1
-        elif df.at[i, 'is_red'] and is_pullback_short and rsi_safe_short and volume_valid and time_valid and last_signal != -1:
+        elif df.at[i, 'is_red'] and is_pullback_short and rsi_safe_short and volume_valid and session_valid and last_signal != -1:
             df.at[i, 'sell_signal'] = True
             last_signal = -1
 
     df['display_buy'] = df['buy_signal']
     df['display_sell'] = df['sell_signal']
 
-    # --- BANNER SINYAL REAL-TIME ---
+    # --- KOTAK SINYAL REAL-TIME DI BAWAH JUDUL ---
     last_row = df.iloc[-1]
     if last_row['display_buy']:
         st.success("### 🟢 SINYAL AKTIF: LONG (BUY) SEKARANG! 🚀")
-        st.info(f"**Parameter:** Entry: ${last_row['close']:,.2f} | Est. SL: ${last_row['close'] - (last_row['atr'] * st.session_state.atr_multiplier):,.2f}")
+        binance_msg = execute_binance_futures_order("🟢 LONG (Buy)", st.session_state.modal_awal * 0.1, st.session_state.leverage, last_row['close'])
+        st.info(f"**Info Eksekusi:** Harga Entry: ${last_row['close']:,.2f} | Status API: {binance_msg}")
     elif last_row['display_sell']:
         st.error("### 🔴 SINYAL AKTIF: SHORT (SELL) SEKARANG! 📉")
-        st.info(f"**Parameter:** Entry: ${last_row['close']:,.2f} | Est. SL: ${last_row['close'] + (last_row['atr'] * st.session_state.atr_multiplier):,.2f}")
+        binance_msg = execute_binance_futures_order("🔴 SHORT (Sell)", st.session_state.modal_awal * 0.1, st.session_state.leverage, last_row['close'])
+        st.info(f"**Info Eksekusi:** Harga Entry: ${last_row['close']:,.2f} | Status API: {binance_msg}")
     else:
-        if last_row['is_green']: st.info("### ⚪ STATUS PASAR: WAIT / HOLD LONG (Tren Bullish Berjalan) 📈")
-        else: st.warning("### ⚪ STATUS PASAR: WAIT / HOLD SHORT (Tren Bearish Berjalan) 📉")
+        if last_row['is_green']: st.info("### ⚪ STATUS PASAR: WAIT / HOLD LONG (Tren Bullish) 📈")
+        else: st.warning("### ⚪ STATUS PASAR: WAIT / HOLD SHORT (Tren Bearish) 📉")
 
     st.markdown("---")
 
@@ -360,7 +402,7 @@ try:
                 'Margin Kunci (\$)': round(margin_final, 2), 'Status': "Berjalan (Running)", 'TP1_Hit': False, 'Laba_TP1_USD': 0
             }
             if i == df.index[-1]:
-                send_telegram_alert(f"🟢 *SNIPER LONG BTC-USD*\nEntry: ${df.at[i, 'close']:.2f}\nSL: ${sl_price:.2f}")
+                send_telegram_alert(f"🟢 *SNIPER LONG BTC-USD*\nEntry: \({df.at[i, 'close']:.2f}\nSL:\){sl_price:.2f}")
 
         elif df.at[i, 'display_sell']:
             if active_trade is not None:
@@ -371,7 +413,7 @@ try:
                 laba_usd = (profit_net / 100) * active_trade['Margin Kunci (\$)'] * ratio_aktif
                 current_equity += laba_usd
                 active_trade['Status'] = "🎯 Ditutup Sinyal Kebalikan"
-                active_trade['Laba Bersih ($ USD)'] = round(active_trade.get('Laba_TP1_USD', 0) + laba_usd, 2)
+                active_trade['Laba Bersih (\$ USD)'] = round(active_trade.get('Laba_TP1_USD', 0) + laba_usd, 2)
                 trades_list.append(active_trade)
                 equity_timestamps.append(df.at[i, 'date'])
                 equity_values.append(current_equity)
@@ -379,45 +421,4 @@ try:
 
             sl_price = df.at[i, 'close'] + (df.at[i, 'atr'] * st.session_state.atr_multiplier)
             jarak_sl = abs(sl_price - df.at[i, 'close'])
-            tp1_price = df.at[i, 'close'] - (jarak_sl * st.session_state.tp1_ratio)
-            tp2_price = df.at[i, 'close'] - (jarak_sl * st.session_state.tp2_ratio)
-            
-            jarak_sl_pct = jarak_sl / df.at[i, 'close']
-            usd_risk = current_equity * (st.session_state.risiko_per_trade_pct / 100)
-            margin_final = min((usd_risk / (jarak_sl_pct * st.session_state.leverage)), current_equity * 0.95)
-
-            active_trade = {
-                'Posisi': "🔴 SHORT (Sell)", 'Waktu Open': df.at[i, 'date'].strftime('%Y-%m-%d %H:%M'),
-                'Harga Entry (\$)': round(df.at[i, 'close'], 2), 'Harga SL (\$)': round(sl_price, 2),
-                'Harga TP1 (\$)': round(tp1_price, 2), 'Harga TP2 (\$)': round(tp2_price, 2),
-                'Margin Kunci (\$)': round(margin_final, 2), 'Status': "Berjalan (Running)", 'TP1_Hit': False, 'Laba_TP1_USD': 0
-            }
-            if i == df.index[-1]:
-                send_telegram_alert(f"🔴 *SNIPER SHORT BTC-USD*\nEntry: \({df.at[i, 'close']:.2f}\nSL:\){sl_price:.2f}")
-
-    if active_trade is not None and active_trade not in trades_list:
-        trades_list.append(active_trade)
-
-    # ==========================================
-    # 📉 KALKULASI METRIK & RENDERING DASHBOARD
-    # ==========================================
-    total_trades_done = [t for t in trades_list if t['Status'] != "Berjalan (Running)"]
-    win_rate = 0.0; profit_factor = 0.0; total_profit_usd = 0.0; max_dd_pct = 0.0
-
-    if len(total_trades_done) > 0:
-        wins = [t for t in total_trades_done if t['Laba Bersih (\$ USD)'] > 0]
-        losses = [t for t in total_trades_done if t['Laba Bersih (\$ USD)'] < 0]
-        win_rate = (len(wins) / len(total_trades_done)) * 100
-        total_profit_usd = sum([t['Laba Bersih (\$ USD)'] for t in total_trades_done])
-        
-        gross_profit = sum([t['Laba Bersih (\$ USD)'] for t in wins])
-        gross_loss = abs(sum([t['Laba Bersih (\$ USD)'] for t in losses]))
-        profit_factor = gross_profit / gross_loss if gross_loss > 0 else (gross_profit if gross_profit > 0 else 0.0)
-
-        equity_series = pd.Series(equity_values)
-        cum_max = equity_series.cummax()
-        max_dd_pct = abs(((equity_series - cum_max) / cum_max).min()) * 100
-
-    current_price = df.iloc[-1]['close']
-    
-    st.markdown("### 📊 Hasil Evaluasi
+            tp1_price = df.at[i, 'close'] - (jarak_sl * st.session_state.tp1_ratio
