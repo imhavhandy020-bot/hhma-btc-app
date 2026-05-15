@@ -112,12 +112,13 @@ def calculate_atr(df, length):
 # ==========================================
 def fetch_indodax_market_data(pair):
     try:
-        url = f"https://indodax.com{pair}"
+        # FIX: URL Endpoint Public API Indodax yang benar
+        url = f"https://indodax.com/api/{pair}/ticker"
         res = requests.get(url, timeout=5).json()
-        last_price = float(res['ticker']['last'])
         
-        coin_name = pair.split('_')[0]
-        base_vol = float(res['ticker'].get('vol_' + coin_name, 0))
+        last_price = float(res['ticker']['last'])
+        coin_prefix = pair.split('_')[0]
+        base_vol = float(res['ticker'].get('vol_' + coin_prefix, 0))
         
         prices = [last_price * (1 + (i * 0.0006 if i % 2 == 0 else -i * 0.0005)) for i in range(-29, 0)] + [last_price]
         vols = [base_vol * (1 + (i * 0.01 if i % 2 == 0 else -i * 0.01)) for i in range(-29, 0)] + [base_vol]
@@ -136,8 +137,15 @@ def indodax_private_api(api_key, secret_key, method, params={}):
         params['method'] = method
         params['nonce'] = int(time.time() * 1000)
         post_data = urllib.parse.urlencode(params)
+        
         signature = hmac.new(bytes(secret_key, 'utf-8'), bytes(post_data, 'utf-8'), hashlib.sha512).hexdigest()
-        headers = {'Key': api_key, 'Sign': signature}
+        # FIX: Header Content-Type wajib ditambahkan untuk otentikasi server Indodax
+        headers = {
+            'Key': api_key, 
+            'Sign': signature,
+            'Content-Type': 'application/x-www-form-urlencoded'
+        }
+        
         res = requests.post("https://indodax.com", data=params, headers=headers, timeout=5).json()
         if res.get('success') == 1: 
             return res['return'], "Sukses"
@@ -172,6 +180,9 @@ with col_left:
     vol_ma_len = st.number_input("Volume MA Length", value=int(load_setting("vol_ma_len", 5)))
     atr_len = st.number_input("ATR Length", value=int(load_setting("atr_len", 5)))
     
+    # FITUR BARU: Pembatasan Dana Maksimal Penggunaan Modal per Entry (Money Management)
+    max_fund_pct = st.slider("Maksimal Alokasi Modal per Transaksi (%)", min_value=10, max_value=100, value=int(load_setting("max_fund_pct", 20)), step=5)
+    
     if st.button("💾 Simpan Konfigurasi Indikator"):
         save_setting("pair", pair)
         save_setting("candles", candles)
@@ -180,13 +191,13 @@ with col_left:
         save_setting("rsi_len", rsi_len)
         save_setting("vol_ma_len", vol_ma_len)
         save_setting("atr_len", atr_len)
+        save_setting("max_fund_pct", max_fund_pct)
         st.success("Konfigurasi Berhasil Disimpan!")
         st.rerun()
 
     st.write("---")
     st.header("🔑 KREDENSIAL & AKUN")
     
-    # Switch antara Akun Simulasi atau Akun Riil/Asli
     trade_mode = st.radio("Mode Eksekusi Perdagangan", ["Simulasi (Virtual)", "Akun Riil (Uang Asli)"])
     
     api_key = st.text_input("Indodax API Key", value=str(load_setting("api_key", "")), type="password")
@@ -195,7 +206,7 @@ with col_left:
     if st.button("💾 Kunci API Credential"):
         save_setting("api_key", api_key)
         save_setting("secret_key", secret_key)
-        st.success("Kredensial API tersimpan aman di lokal!")
+        st.success("Kredensial API tersimpan aman!")
         st.rerun()
         
     st.write("---")
@@ -203,13 +214,11 @@ with col_left:
     auto_status = st.toggle("Aktifkan Auto-Trading Autopilot", value=st.session_state.autopilot)
     st.session_state.autopilot = auto_status
     
-    # Ambil data saldo berdasarkan mode yang dipilih
     if trade_mode == "Simulasi (Virtual)":
         bal_idr, bal_coin = get_virtual_balance()
         st.metric(label="Saldo Rupiah (Simulasi)", value=f"Rp {bal_idr:,.2f}")
         st.metric(label=f"Saldo Koin ({pair.split('_')[0].upper()})", value=f"{bal_coin:.6f}")
     else:
-        # Ambil Saldo Langsung dari Dompet Indodax Asli via API
         info_dana, msg = indodax_private_api(api_key, secret_key, "getInfo")
         if info_dana:
             bal_idr = float(info_dana['balance'].get('idr', 0))
@@ -246,22 +255,25 @@ with col_right:
         is_buy_signal = prev_row['HMA'] <= prev_row['EMA'] and last_row['HMA'] > last_row['EMA']
         is_sell_signal = prev_row['HMA'] >= prev_row['EMA'] and last_row['HMA'] < last_row['EMA']
         
+        # Hitung batasan dana belanja berdasarkan slider Money Management (%)
+        trading_budget = bal_idr * (max_fund_pct / 100)
+        
         if is_buy_signal:
             st.success(f"🚀 **SINYAL BUY (🟢):** Harga Rp {current_price:,}")
-            if st.session_state.autopilot:
-                if trade_mode == "Simulasi (Virtual)" and bal_idr > 10000:
-                    allocated_coin = bal_idr / current_price
-                    update_virtual_balance(0, allocated_coin)
+            if st.session_state.autopilot and bal_idr > 10000:
+                if trade_mode == "Simulasi (Virtual)":
+                    allocated_coin = trading_budget / current_price
+                    remaining_idr = bal_idr - trading_budget
+                    update_virtual_balance(remaining_idr, bal_coin + allocated_coin)
                     log_trade(pair, "buy", current_price, allocated_coin, "simulated")
-                    st.toast("🤖 Bot Virtual Berhasil Beli!", icon="🛒")
+                    st.toast(f"🤖 Bot Virtual Beli Berhasil Menggunakan {max_fund_pct}% Modal!", icon="🛒")
                     st.rerun()
-                elif trade_mode == "Akun Riil (Uang Asli)" and bal_idr > 10000:
-                    # EKSEKUSI PEMBELIAN ASLI DI MARKET INDODAX
-                    order_params = {'pair': pair, 'type': 'buy', 'idr': int(bal_idr)}
+                elif trade_mode == "Akun Riil (Uang Asli)":
+                    order_params = {'pair': pair, 'type': 'buy', 'idr': int(trading_budget)}
                     res_order, msg = indodax_private_api(api_key, secret_key, "trade", order_params)
                     if res_order:
-                        log_trade(pair, "buy", current_price, bal_idr / current_price, "real")
-                        st.toast("🔥 BOT BERHASIL BELI ASSET RIIL DI INDODAX!", icon="💰")
+                        log_trade(pair, "buy", current_price, trading_budget / current_price, "real")
+                        st.toast(f"🔥 BOT BERHASIL BELI SEJUMLAH Rp {trading_budget:,.0f} DI INDODAX!", icon="💰")
                         st.rerun()
                     else:
                         st.error(f"Eksekusi beli pasar gagal: {msg}")
@@ -271,17 +283,16 @@ with col_right:
             if st.session_state.autopilot:
                 if trade_mode == "Simulasi (Virtual)" and bal_coin > 0:
                     returned_idr = bal_coin * current_price
-                    update_virtual_balance(returned_idr, 0)
+                    update_virtual_balance(bal_idr + returned_idr, 0)
                     log_trade(pair, "sell", current_price, bal_coin, "simulated")
-                    st.toast("🤖 Bot Virtual Berhasil Jual!", icon="🛒")
+                    st.toast("🤖 Bot Virtual Berhasil Likuidasi Seluruh Koin!", icon="🛒")
                     st.rerun()
                 elif trade_mode == "Akun Riil (Uang Asli)" and bal_coin > 0:
-                    # EKSEKUSI PENJUALAN ASLI DI MARKET INDODAX
                     order_params = {'pair': pair, 'type': 'sell', 'coin': bal_coin}
                     res_order, msg = indodax_private_api(api_key, secret_key, "trade", order_params)
                     if res_order:
                         log_trade(pair, "sell", current_price, bal_coin, "real")
-                        st.toast("🔥 BOT BERHASIL JUAL ASSET RIIL DI INDODAX!", icon="💰")
+                        st.toast("🔥 BOT BERHASIL JUAL SELURUH ASSET DI MARKET INDODAX!", icon="💰")
                         st.rerun()
                     else:
                         st.error(f"Eksekusi jual pasar gagal: {msg}")
