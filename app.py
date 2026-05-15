@@ -51,13 +51,13 @@ def get_crypto_data(p, i):
     df = ticker.history(period=p, interval=i)
     df = df.reset_index()
     df = df.rename(columns={'Date': 'date', 'Datetime': 'date', 'Open': 'open', 'High': 'high', 'Low': 'low', 'Close': 'close', 'Volume': 'volume'})
-    return df  # PERBAIKAN: Mengembalikan objek DataFrame langsung
+    return df
 
 try:
     df = get_crypto_data(period_map[tf_pilihan], interval_map[tf_pilihan])
     
     if df.empty:
-        st.error("Gagal mengambil data dari Yahoo Finance. Silakan coba lagi.")
+        st.error("Gagal mengambil data dari Yahoo Finance.")
         st.stop()
 
     # --- PENGHITUNGAN ALGORITMA FILTER BERLAPIS ---
@@ -79,7 +79,6 @@ try:
     df['sell_signal'] = False
     last_signal = 0
 
-    # PERBAIKAN: Menggunakan .at untuk performa kecepatan loop
     for i in df.index:
         if df.at[i, 'high_accuracy_buy'] and last_signal != 1:
             df.at[i, 'buy_signal'] = True
@@ -88,8 +87,9 @@ try:
             df.at[i, 'sell_signal'] = True
             last_signal = -1
 
-    df['display_buy'] = df['buy_signal'].shift(-1)
-    df['display_sell'] = df['sell_signal'].shift(-1)
+    # PERBAIKAN: Menghapus .shift(-1) agar status sinyal real-time sinkron
+    df['display_buy'] = df['buy_signal']
+    df['display_sell'] = df['sell_signal']
 
     # --- MATRIKS BACKTEST PRESISI UTAMA ---
     trades_list = []  
@@ -97,7 +97,6 @@ try:
     target_tp = 1.045  
     target_sl = 0.985  
 
-    # PERBAIKAN: Logika penutupan transaksi otomatis di dalam loop data trading
     for i in df.index:
         if df.at[i, 'buy_signal']:
             if active_trade is not None:
@@ -152,16 +151,36 @@ try:
 
     current_price = df.iloc[-1]['close']
     
-    # --- PAPAN METRIK UTAMA ---
-    m1, m2, m3 = st.columns(3)
+    # PERBAIKAN: Deteksi otomatis sinyal terakhir untuk ditaruh di papan metrik
+    df_signals = df[df['buy_signal'] | df['sell_signal']]
+    if not df_signals.empty:
+        last_row = df_signals.iloc[-1]
+        if last_row['buy_signal']:
+            status_sinyal = "🟢 BUY (Masuk Posisi)"
+            waktu_sinyal = last_row['date'].strftime('%Y-%m-%d %H:%M')
+            harga_sinyal = f"${last_row['close']:,.2f}"
+        else:
+            status_sinyal = "🔴 EXIT / SELL (Keluar)"
+            waktu_sinyal = last_row['date'].strftime('%Y-%m-%d %H:%M')
+            harga_sinyal = f"${last_row['close']:,.2f}"
+    else:
+        status_sinyal = "⚪ Belum Ada Sinyal"
+        waktu_sinyal = "-"
+        harga_sinyal = "-"
+
+    # --- PAPAN METRIK UTAMA (DIURUTKAN ULANG) ---
+    m1, m2, m3, m4 = st.columns(4)
     with m1:
         st.metric(label=f"Harga BTC Live ({tf_pilihan})", value=f"${current_price:,.2f}")
     with m2:
-        st.metric(label="Akurasi & Sinyal Lolos Sensor", value=f"{win_rate:.1f}%", delta=f"{len(total_trades_done)} Transaksi Selesai")
+        # Menampilkan status sinyal aktif paling baru hasil filter algoritma
+        st.metric(label="Sinyal Aktif Saat Ini", value=status_sinyal, delta=f"Eksekusi: {harga_sinyal}")
     with m3:
-        st.metric(label=f"Estimasi Keuntungan Bersih ({leverage}x)", value=f"${estimasi_profit_usd:+,.2f}", delta=f"{total_profit_pct:+.1f}% Pertumbuhan")
+        st.metric(label="Waktu Sinyal Terakhir", value=waktu_sinyal)
+    with m4:
+        st.metric(label="Win Rate & Estimasi Profit", value=f"{win_rate:.1f}%", delta=f"${estimasi_profit_usd:+,.2f} ({total_profit_pct:+.1f}%)")
 
-    # Tampilkan tabel data transaksi jika ada riwayatnya
+    # Tampilkan tabel data transaksi
     if trades_list:
         st.subheader("📜 Riwayat Transaksi Backtest")
         st.dataframe(pd.DataFrame(trades_list), use_container_width=True)
