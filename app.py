@@ -86,6 +86,24 @@ def calculate_atr(df, length):
     true_range = ranges.max(axis=1)
     return true_range.rolling(length).mean()
 
+# ==========================================
+# 4. LOGIKA KONEKSI API & STRATEGI BINANCE
+# ==========================================
+def fetch_futures_balance(api_key, secret_key, mode):
+    if not api_key or not secret_key:
+        return 0.0, "Kredensial API belum diisi"
+    try:
+        testnet_mode = True if mode == "Simulasi / Testnet" else False
+        client = Client(api_key, secret_key, testnet=testnet_mode)
+        account_info = client.futures_account()
+        balances = account_info.get('assets', [])
+        for asset in balances:
+            if asset['asset'] == 'USDT':
+                return float(asset['walletBalance']), "Sukses"
+        return 0.0, "Saldo USDT tidak ditemukan"
+    except Exception as e:
+        return 0.0, f"Gagal terhubung ke API: {str(e)}"
+
 def fetch_and_calculate_data(symbol, timeframe, limit, hma_len, ema_len, rsi_len, vol_len, atr_len):
     try:
         client = Client()
@@ -100,7 +118,6 @@ def fetch_and_calculate_data(symbol, timeframe, limit, hma_len, ema_len, rsi_len
         for col in ['Open', 'High', 'Low', 'Close', 'Volume']:
             df[col] = df[col].astype(float)
             
-        # Hitung Indikator Menggunakan Fungsi Native Baru
         df['EMA'] = calculate_ema(df['Close'], int(ema_len))
         df['HMA'] = calculate_hma(df['Close'], int(hma_len))
         df['RSI'] = calculate_rsi(df['Close'], int(rsi_len))
@@ -116,7 +133,6 @@ def check_trading_signals(df):
     current = df.iloc[-1]
     previous = df.iloc[-2]
     
-    # Validasi penanganan nilai kosong (NaN)
     if pd.isna(current['HMA']) or pd.isna(current['EMA']) or pd.isna(current['Vol_MA']):
         return "WAIT"
         
@@ -180,7 +196,7 @@ def execute_emergency_kill(api_key, secret_key, symbol, mode, tele_token, tele_i
         return False, f"Gagal: {str(e)}"
 
 # ==========================================
-# 4. ANTARMUKA DESAIN UI (STREAMLIT)
+# 5. ANTARMUKA DESAIN UI (STREAMLIT)
 # ==========================================
 st.set_page_config(page_title="HHMA Renko Sniper Pro", page_icon="🛡️", layout="wide")
 st.title("🛡️ HHMA Renko Sniper Pro - Binance Futures Trading Bot")
@@ -189,7 +205,7 @@ st.write("---")
 if 'autopilot' not in st.session_state:
     st.session_state.autopilot = False
 
-col_left, col_right = st.columns()
+col_left, col_right = st.columns(2)
 
 with col_left:
     st.header("🕹️ PANEL KENDALI UTAMA")
@@ -229,7 +245,7 @@ with col_right:
 st.write("---")
 
 # ==========================================
-# 5. KONTROL UTAMA & AUTOPILOT SAKELAR
+# 6. KONTROL UTAMA & AUTOPILOT SAKELAR
 # ==========================================
 col_b1, col_b2, col_b3 = st.columns(3)
 
@@ -267,15 +283,26 @@ if st.session_state.autopilot:
     st.info("🔄 Mode Autopilot Aktif: Memindai harga real-time setiap 15 detik...")
 
 # ==========================================
-# 6. PEMROSESAN DATA LIVE & SCANNING
+# 7. PEMROSESAN DATA LIVE, MONITOR & SCANNING
 # ==========================================
+if api_key and secret_key:
+    st.write("---")
+    st.subheader("💰 MONITOR SALDO AKUN BINANCE")
+    balance_usdt, status_msg = fetch_futures_balance(api_key, secret_key, execution_mode)
+    if status_msg == "Sukses":
+        st.metric(label=f"Saldo Aktif Wallet ({execution_mode})", value=f"USDT {balance_usdt:,.2f}")
+    else:
+        st.warning(f"⚠️ {status_msg}")
+
 df_data = fetch_and_calculate_data(symbol, timeframe, candles, hma_len, ema_len, rsi_len, vol_len, atr_len)
 
 if df_data is not None:
     latest = df_data.iloc[-1]
     
+    st.write("---")
+    st.subheader(f"📊 DATA PASAR REAL-TIME ({symbol})")
     col_m1, col_m2, col_m3, col_m4 = st.columns(4)
-    col_m1.metric(label=f"Harga Live {symbol}", value=f"${latest['Close']:,}")
+    col_m1.metric(label="Harga Live", value=f"${latest['Close']:,}")
     col_m2.metric(label="HMA", value=f"{latest['HMA']:.2f}" if not pd.isna(latest['HMA']) else "Kalkulasi...")
     col_m3.metric(label="EMA", value=f"{latest['EMA']:.2f}" if not pd.isna(latest['EMA']) else "Kalkulasi...")
     col_m4.metric(label="RSI", value=f"{latest['RSI']:.2f}" if not pd.isna(latest['RSI']) else "Kalkulasi...")
