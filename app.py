@@ -9,28 +9,47 @@ import ccxt
 st.set_page_config(page_title="HHMA Sniper BTC Max Pro", layout="wide")
 st.title("🛡️ HHMA Renko Sniper Pro - Binance Futures Trading Bot")
 
-# --- 1. DEFAULTS & RESET SYSTEM ---
+# --- 1. DEFINISI PENGATURAN AWAL PABRIK ---
 DEFAULTS = {
-    "tf": "4 Jam (4h)", "src": "Close (Penutupan)", "jumlah_tampilan": 150, "l_hma": 16, "l_ema": 50,
-    "l_rsi": 14, "l_vol": 30, "l_atr": 14, "m_atr": 2.5, "m_chan": 2.5,
-    "modal": 1000.0, "lev": 10, "r_tp1": 1.5, "fee": 0.04
+    "tf": "4 Jam (4h)", "src": "Close (Penutupan)", "jumlah_tampilan": 10,       
+    "l_hma": 5, "l_ema": 5, "l_rsi": 5, "l_vol": 5, "l_atr": 5,                 
+    "m_atr": 2.5, "m_chan": 1.0, "modal": 100.0, "lev": 25, "r_tp1": 1.50, "fee": 0.04                 
 }
-for k, v in DEFAULTS.items():
-    if k not in st.session_state: st.session_state[k] = v
 
-if st.sidebar.button("🔄 Reset Pengaturan Awal"):
-    for k, v in DEFAULTS.items(): st.session_state[k] = v
+# --- 2. SINKRONISASI MEMORI URL & SESSION STATE (ANTI-RESET) ---
+params = st.query_params
+
+for k, v in DEFAULTS.items():
+    if k not in st.session_state:
+        if k in params:
+            # Baca data kustom dari URL browser jika halaman di-refresh
+            if isinstance(v, int): st.session_state[k] = int(params[k])
+            elif isinstance(v, float): st.session_state[k] = float(params[k])
+            else: st.session_state[k] = params[k]
+        else:
+            st.session_state[k] = v
+
+def reset_to_factory():
+    for k, v in DEFAULTS.items(): 
+        st.session_state[k] = v
     st.query_params.clear()
     st.rerun()
 
-# --- 2. CONTROL PANEL (SIDEBAR) ---
+# --- 3. CONTROL PANEL (SIDEBAR - INPUT DUA ARAH) ---
 st.sidebar.header("🕹️ PANEL KENDALI UTAMA")
+
+if st.sidebar.button("🔄 Reset ke Pengaturan Awal"):
+    reset_to_factory()
+
+st.sidebar.markdown("---")
 tf_options = ["4 Jam (4h)", "1 Hari (Daily)"]
+# FIX: Menggunakan value dari session_state agar sinkron saat refresh
 tf = st.sidebar.selectbox("Timeframe:", options=tf_options, index=tf_options.index(st.session_state.tf) if st.session_state.tf in tf_options else 0)
 
 src_options = ["Close (Penutupan)", "Open (Pembukaan)", "High (Tertinggi)", "Low (Terendah)"]
 src_p = st.sidebar.selectbox("Source Data:", options=src_options, index=src_options.index(st.session_state.src) if st.session_state.src in src_options else 0)
 
+# FIX: Menyambungkan parameter value langsung ke st.session_state agar input mengunci otomatis
 jumlah_tampilan = st.sidebar.number_input("Jumlah Lilin di Layar:", min_value=10, max_value=300, value=int(st.session_state.jumlah_tampilan), step=10)
 
 l_hma = st.sidebar.number_input("HMA Length:", min_value=2, max_value=50, value=int(st.session_state.l_hma), step=1)
@@ -54,15 +73,17 @@ api_key = st.sidebar.text_input("Binance API Key:", type="password")
 secret_key = st.sidebar.text_input("Binance Secret Key:", type="password")
 mode_trading = st.sidebar.radio("Mode Eksekusi:", ["Simulasi / Testnet", "🚨 LIVE REAL TRADING"], index=0)
 
+# TOMBOL UTAMA UNTUK MENGUNCI PERMANEN KE ALAMAT URL BROWSER
 if st.sidebar.button("💾 Kunci & Simpan Setelan"):
     st.session_state.update({"tf": tf, "src": src_p, "jumlah_tampilan": jumlah_tampilan, "l_hma": l_hma, "l_ema": l_ema, "l_rsi": l_rsi, "l_vol": l_vol, "l_atr": l_atr, "m_atr": m_atr, "m_chan": m_chan, "modal": modal, "lev": lev, "r_tp1": r_tp1, "fee": fee})
+    # Paksa alamat URL menyimpan string data agar anti-hilang saat F5/Refresh
     st.query_params.update(tf=tf, src=src_p, jumlah_tampilan=str(jumlah_tampilan), l_hma=str(l_hma), l_ema=str(l_ema), l_rsi=str(l_rsi), l_vol=str(l_vol), l_atr=str(l_atr), m_atr=str(m_atr), m_chan=str(m_chan), modal=str(modal), lev=str(lev), r_tp1=str(r_tp1), fee=str(fee))
-    st.success("💾 Parameter kustom dan akses API terkunci permanen!")
+    st.success("💾 Setelan berhasil dikunci secara permanen di alamat web Anda!")
 
 # --- API BINANCE ORDER EXECUTION ---
 def execute_live_binance_order(posisi, entry_price, margin_size):
     if not api_key or not secret_key:
-        return "⚠️ API Key kosong. Eksekusi Live dilewati."
+        return "⚠️ API Key kosong. Eksekusi Live diabaikan."
     try:
         exchange = ccxt.binance({
             'apiKey': api_key, 'secret': secret_key,
@@ -85,7 +106,7 @@ def execute_live_binance_order(posisi, entry_price, margin_size):
     except Exception as e:
         return f"❌ Gagal API Binance: {str(e)}"
 
-# --- 3. DATA FETCHING & TA CALCULATION ---
+# --- 4. DATA FETCHING & TA CALCULATION ---
 t_map = {"4 Jam (4h)": "4h", "1 Hari (Daily)": "1d"}
 p_map = {"4 Jam (4h)": "180d", "1 Hari (Daily)": "730d"}
 s_map = {"Close (Penutupan)": "close", "Open (Pembukaan)": "open", "High (Tertinggi)": "high", "Low (Terendah)": "low"}
@@ -99,7 +120,6 @@ def load_data(p, i):
 try:
     df = load_data(p_map[st.session_state.tf], t_map[st.session_state.tf])
     
-    # PERBAIKAN TOTAL BUG: Logika Cek Status Zona Waktu (Tz-Safe Engine)
     if df['date'].dt.tz is not None:
         df['date'] = df['date'].dt.tz_convert('Asia/Jakarta').dt.tz_localize(None)
     else:
