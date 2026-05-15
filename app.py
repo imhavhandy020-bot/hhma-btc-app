@@ -5,6 +5,7 @@ import yfinance as yf
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import requests
+from datetime import datetime
 
 st.set_page_config(page_title="HHMA Sniper BTC Futures Max Pro", layout="wide")
 st.title("🛡️ HHMA Renko Sniper Pro - 4H Institutional System")
@@ -50,7 +51,7 @@ st.sidebar.header("🕹️ PANEL KENDALI UTAMA")
 
 col_action1, col_action2 = st.sidebar.columns(2)
 with col_action1:
-    btn_simpan = st.button("💾 Simpan Setelan", help="Mengunci parameter yang Anda ketik.")
+    btn_simpan = st.button("💾 Simpan Setelan", help="Mengunci parameter kustom Anda.")
 with col_action2:
     st.button("🔄 Reset Standar", on_click=reset_to_defaults, help="Kembali ke rumus presisi awal.")
 
@@ -187,24 +188,26 @@ try:
         rsi_safe_short = df.at[i, 'rsi'] > 45
         volume_valid = df.at[i, 'volume'] > df.at[i, 'vol_ma']
 
-        # Filter Berbasis Saringan Jam Sesi Pasar WIB
-        current_time_obj = df.at[i, 'date'].time()
+        # Saringan Jam Sesi Pasar Dinamis
+        time_valid = True
         if st.session_state.session_filter_active:
-            is_in_session = (st.session_state.start_hour <= current_time_obj.hour <= st.session_state.end_hour)
-        else:
-            is_in_session = True
+            current_hour = df.at[i, 'date'].hour
+            if st.session_state.start_hour <= st.session_state.end_hour:
+                time_valid = st.session_state.start_hour <= current_hour <= st.session_state.end_hour
+            else:
+                time_valid = current_hour >= st.session_state.start_hour or current_hour <= st.session_state.end_hour
 
-        if df.at[i, 'is_green'] and is_pullback_long and rsi_safe_long and volume_valid and is_in_session and last_signal != 1:
+        if df.at[i, 'is_green'] and is_pullback_long and rsi_safe_long and volume_valid and time_valid and last_signal != 1:
             df.at[i, 'buy_signal'] = True
             last_signal = 1
-        elif df.at[i, 'is_red'] and is_pullback_short and rsi_safe_short and volume_valid and is_in_session and last_signal != -1:
+        elif df.at[i, 'is_red'] and is_pullback_short and rsi_safe_short and volume_valid and time_valid and last_signal != -1:
             df.at[i, 'sell_signal'] = True
             last_signal = -1
 
     df['display_buy'] = df['buy_signal']
     df['display_sell'] = df['sell_signal']
 
-    # --- BANNER SINYAL REAL-TIME DI BAWAH JUDUL ---
+    # --- BANNER SINYAL REAL-TIME ---
     last_row = df.iloc[-1]
     if last_row['display_buy']:
         st.success("### 🟢 SINYAL AKTIF: LONG (BUY) SEKARANG! 🚀")
@@ -417,6 +420,4 @@ try:
 
     current_price = df.iloc[-1]['close']
     
-    st.markdown("### 📊 Hasil Evaluasi Kinerja Kuantitatif (Compound Growth)")
-    m1, m2, m3, m4, m5, m6 = st.columns(6)
-    
+    st.markdown("### 📊 Hasil Evaluasi
