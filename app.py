@@ -41,7 +41,6 @@ leverage = st.sidebar.slider("Leverage (Multiplier):", min_value=1, max_value=50
 st.sidebar.markdown("---")
 st.sidebar.header("🎯 Target Risiko Dinamis (ATR)")
 st.sidebar.info("Target harga otomatis mengikuti volatilitas market. Mengecil saat sepi, melebar saat ramai.")
-# Pengaturan pengali (multiplier) jarak ATR untuk penentuan level TP dan SL
 tp_atr_multiplier = st.sidebar.number_input("Multiplier Take Profit (TP ATR):", min_value=0.5, max_value=10.0, value=3.0, step=0.1)
 sl_atr_multiplier = st.sidebar.number_input("Multiplier Stop Loss (SL ATR):", min_value=0.5, max_value=10.0, value=1.5, step=0.1)
 
@@ -79,7 +78,6 @@ try:
     df['raw_buy'] = df['is_green'] & (~df['is_green'].shift(1).fillna(False))
     df['raw_sell'] = (~df['is_green']) & df['is_green'].shift(1).fillna(False)
 
-    # Filter Akurasi Ultra Maksimal
     df['high_accuracy_buy'] = (df['raw_buy'] & (df['close'] > df['ema_200'] * 1.005) & (df['rsi'] > 45) & (df['rsi'] < 58) & (df['atr'] > df['atr_ma']) & (df['volume'] > df['volume_ma']))
     df['high_accuracy_sell'] = (df['raw_sell'] & (df['close'] < df['ema_200'] * 0.995) & (df['rsi'] > 42) & (df['rsi'] < 55) & (df['atr'] > df['atr_ma']) & (df['volume'] > df['volume_ma']))
 
@@ -99,9 +97,12 @@ try:
     trades_list = []  
     active_trade = None
 
+    # Tambahkan kolom baru di df utama untuk memetakan visualisasi target ke grafik
+    df['chart_tp'] = None
+    df['chart_sl'] = None
+
     for i in df.index:
         if df.at[i, 'buy_signal']:
-            # Logika penutupan darurat jika ada posisi gantung terdeteksi sinyal balik
             if active_trade is not None:
                 loss_pct = ((df.at[i, 'close'] - active_trade['entry_price']) / active_trade['entry_price']) * 100
                 active_trade['status'] = "Selesai (Cut Sinyal Kebalikan)"
@@ -109,11 +110,9 @@ try:
                 active_trade['profit_usd'] = (active_trade['profit_pct'] / 100) * modal_awal
                 trades_list.append(active_trade)
 
-            # Eksekusi kalkulasi target harga berbasis ATR saat lilin berjalan entry
             entry_price = df.at[i, 'close']
             atr_now = df.at[i, 'atr']
             
-            # Formulasi target harga absolut (bukan persentase statis)
             live_tp_price = entry_price + (atr_now * tp_atr_multiplier)
             live_sl_price = entry_price - (atr_now * sl_atr_multiplier)
 
@@ -127,9 +126,15 @@ try:
                 'profit_pct': 0.0,
                 'profit_usd': 0.0
             }
+            
+            df.at[i, 'chart_tp'] = live_tp_price
+            df.at[i, 'chart_sl'] = live_sl_price
 
         elif active_trade is not None:
-            # Pengecekan real-time apakah sumbu harga menembus batas ATR dinamis
+            # Petakan target berjalan ke dalam row df untuk digambar di grafik
+            df.at[i, 'chart_tp'] = active_trade['target_tp']
+            df.at[i, 'chart_sl'] = active_trade['target_sl']
+            
             high_match = df.at[i, 'high'] >= active_trade['target_tp']
             low_match = df.at[i, 'low'] <= active_trade['target_sl']
             
@@ -152,7 +157,7 @@ try:
     if active_trade is not None:
         trades_list.append(active_trade)
 
-    # Rekap data metrik papan skor
+    # Rekap data metrik
     total_trades_done = [t for t in trades_list if t['status'] != "Berjalan (Running)"]
     win_rate = 0
     total_profit_pct = sum([t['profit_pct'] for t in total_trades_done])
@@ -207,6 +212,17 @@ try:
     fig.add_trace(go.Scatter(x=df_plot['date'], y=df_plot['hma'], name=f"HHMA ({length_hma})", line=dict(color='#ffeb3b', width=2)), row=1, col=1)
     fig.add_trace(go.Scatter(x=df_plot['date'], y=df_plot['ema_200'], name="EMA 200", line=dict(color='#e91e63', width=1.5, dash='dash')), row=1, col=1)
     
+    # PERBAIKAN: Menampilkan Garis Level Target TP dan SL Dinamis Berjalan di Grafik Utama
+    fig.add_trace(go.Scatter(
+        x=df_plot['date'], y=df_plot['chart_tp'], name="Target TP (ATR)", 
+        line=dict(color='#00e676', width=1, dash='dot'), connectgaps=False
+    ), row=1, col=1)
+    
+    fig.add_trace(go.Scatter(
+        x=df_plot['date'], y=df_plot['chart_sl'], name="Target SL (ATR)", 
+        line=dict(color='#ff1744', width=1, dash='dot'), connectgaps=False
+    ), row=1, col=1)
+    
     # Penempatan Penanda Sinyal Grafik
     buy_markers = df_plot[df_plot['buy_signal']]
     sell_markers = df_plot[df_plot['sell_signal']]
@@ -230,9 +246,7 @@ try:
     # Tampilkan tabel data transaksi resmi
     if trades_list:
         st.subheader("📜 Riwayat Transaksi Backtest")
-        # Mengubah list dictionary menjadi dataframe untuk pelaporan audit transaksi
         df_trades_report = pd.DataFrame(trades_list)
-        # Re-order kolom agar nilai target harga dinamis ATR ikut tertera jelas di tabel data
         cols_order = ['waktu_entry', 'jenis', 'entry_price', 'target_tp', 'target_sl', 'status', 'profit_pct', 'profit_usd']
         df_trades_report = df_trades_report.reindex(columns=[c for c in cols_order if c in df_trades_report.columns])
         st.dataframe(df_trades_report, use_container_width=True)
