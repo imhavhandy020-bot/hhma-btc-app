@@ -6,40 +6,42 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 st.set_page_config(page_title="HHMA Sniper BTC Max Pro", layout="wide")
-st.title("🛡️ HHMA Renko Sniper Pro - 4H Institutional System (Compound Boost)")
+st.title("🛡️ HHMA Renko Sniper Pro - Macro Institutional System")
 
-# =========================================================
-# 💾 MODIFIKASI PERMANEN: SETELAN AWAL BARU SESUAI REQUES Anda
-# =========================================================
+# --- 1. DEFAULTS & RESET SYSTEM ---
 DEFAULTS = {
     "tf": "4 Jam (4h)", 
     "src": "Close (Penutupan)", 
-    "jumlah_tampilan": 10,       # Setelan awal Anda
-    "l_hma": 5,                 # Setelan awal Anda
-    "l_ema": 5,                 # Setelan awal Anda
-    "l_rsi": 5,                 # Setelan awal Anda
-    "l_vol": 5,                 # Setelan awal Anda
-    "l_atr": 5,                 # Setelan awal Anda
-    "m_atr": 2.5,               # Setelan awal Anda (SL ATR Mult)
-    "m_chan": 1.0,              # Setelan awal Anda (Chandelier Mult)
-    "modal": 100.0,             # Setelan awal Anda (Initial Margin)
-    "lev": 25,                  # Setelan awal Anda (Leverage)
-    "r_tp1": 1.50,              # Setelan awal Anda (TP 1 Ratio)
-    "fee": 0.04                 # Setelan awal Anda (Trading Fee)
+    "jumlah_tampilan": 10,       
+    "l_hma": 5,                 
+    "l_ema": 5,                 
+    "l_rsi": 5,                 
+    "l_vol": 5,                 
+    "l_atr": 5,                 
+    "m_atr": 2.5,               
+    "m_chan": 1.0,              
+    "modal": 100.0,             
+    "lev": 25,                  
+    "r_tp1": 1.50,              
+    "fee": 0.04                 
 }
 
 for k, v in DEFAULTS.items():
     if k not in st.session_state: st.session_state[k] = v
 
-# Tombol reset sekarang akan otomatis mengembalikan ke parameter kustom Anda di atas
 if st.sidebar.button("🔄 Reset ke Pengaturan Awal"):
     for k, v in DEFAULTS.items(): st.session_state[k] = v
     st.rerun()
 
 # --- 2. CONTROL PANEL (SIDEBAR - NUMBER INPUT MANUAl) ---
 st.sidebar.header("🕹️ PANEL KENDALI UTAMA")
-tf = st.sidebar.selectbox("Timeframe:", ["4 Jam (4h)", "1 Hari (Daily)", "1 Jam (1h)", "15 Menit (15m)"], index=["4 Jam (4h)", "1 Hari (Daily)", "1 Jam (1h)", "15 Menit (15m)"].index(st.session_state.tf))
-src_p = st.sidebar.selectbox("Source Data:", ["Close (Penutupan)", "Open (Pembukaan)", "High (Tertinggi)", "Low (Terendah)"], index=["Close (Penutupan)", "Open (Pembukaan)", "High (Tertinggi)", "Low (Terendah)"].index(st.session_state.src))
+
+# MODIFIKASI: Menghapus 1 Jam (1h) dan 15 Menit (15m) dari daftar pilihan selectbox
+tf_options = ["4 Jam (4h)", "1 Hari (Daily)"]
+tf = st.sidebar.selectbox("Timeframe:", options=tf_options, index=tf_options.index(st.session_state.tf) if st.session_state.tf in tf_options else 0)
+
+src_options = ["Close (Penutupan)", "Open (Pembukaan)", "High (Tertinggi)", "Low (Terendah)"]
+src_p = st.sidebar.selectbox("Source Data:", options=src_options, index=src_options.index(st.session_state.src))
 
 jumlah_tampilan = st.sidebar.number_input("Jumlah Lilin di Layar:", min_value=10, max_value=300, value=int(st.session_state.jumlah_tampilan), step=10)
 
@@ -63,8 +65,9 @@ if st.sidebar.button("💾 Kunci & Simpan Setelan"):
     st.success("Setelan kustom Anda berhasil diperbarui di sistem!")
 
 # --- 3. DATA FETCHING & TA CALCULATION ---
-t_map = {"4 Jam (4h)": "4h", "1 Hari (Daily)": "1d", "1 Jam (1h)": "1h", "15 Menit (15m)": "15m"}
-p_map = {"4 Jam (4h)": "180d", "1 Hari (Daily)": "730d", "1 Jam (1h)": "90d", "15 Menit (15m)": "30d"}
+# MODIFIKASI: Memangkas mapping interval dan period khusus untuk 4h dan 1d saja
+t_map = {"4 Jam (4h)": "4h", "1 Hari (Daily)": "1d"}
+p_map = {"4 Jam (4h)": "180d", "1 Hari (Daily)": "730d"}
 s_map = {"Close (Penutupan)": "close", "Open (Pembukaan)": "open", "High (Tertinggi)": "high", "Low (Terendah)": "low"}
 
 @st.cache_data(ttl=30)
@@ -172,7 +175,7 @@ try:
     fig.add_trace(go.Scatter(x=df_p['date'], y=df_p['hma'], line=dict(color='yellow', width=2), name="HMA"), row=1, col=1)
     fig.add_trace(go.Scatter(x=df_p['date'], y=df_p['ema'], line=dict(color='cyan', width=1, dash='dash'), name="EMA"), row=1, col=1)
     fig.add_trace(go.Bar(x=df_p['date'], y=df_p['volume'], marker_color='orange', name="Volume"), row=2, col=1)
-    fig.add_trace(go.Scatter(x=df_p['date'], y=df_p['rsi'], line=dict(color='green', width=1.5), name="RSI"), row=3, col=1)
+    fig.add_trace(go.Scatter(x=df_p['date'], y=df_p['vol_ma'], line=dict(color='white', width=1), name="Volume MA"), row=2, col=1)
     fig.update_layout(height=650, xaxis_rangeslider_visible=False, template="plotly_dark")
     st.plotly_chart(fig, use_container_width=True)
 
