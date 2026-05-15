@@ -1,30 +1,32 @@
 import sqlite3
+import time
+import hmac
+import hashlib
+import urllib.parse
 import pandas as pd
 import streamlit as st
 import requests
-from binance.client import Client
-from binance.enums import *
 from streamlit_autorefresh import st_autorefresh
 
 # ==========================================
 # 1. DATABASE LOKAL (ANTI-LOST CONFIG)
 # ==========================================
 def init_db():
-    conn = sqlite3.connect("bot_settings.db")
+    conn = sqlite3.connect("indodax_bot.db")
     cursor = conn.cursor()
     cursor.execute("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)")
     conn.commit()
     conn.close()
 
 def save_setting(key, value):
-    conn = sqlite3.connect("bot_settings.db")
+    conn = sqlite3.connect("indodax_bot.db")
     cursor = conn.cursor()
     cursor.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", (key, str(value)))
     conn.commit()
     conn.close()
 
 def load_setting(key, default_value):
-    conn = sqlite3.connect("bot_settings.db")
+    conn = sqlite3.connect("indodax_bot.db")
     cursor = conn.cursor()
     cursor.execute("SELECT value FROM settings WHERE key = ?", (key,))
     row = cursor.fetchone()
@@ -43,20 +45,7 @@ def load_setting(key, default_value):
 init_db()
 
 # ==========================================
-# 2. SISTEM NOTIFIKASI TELEGRAM
-# ==========================================
-def send_telegram_alert(token, chat_id, message):
-    if not token or not chat_id:
-        return
-    try:
-        url = f"https://telegram.org{token}/sendMessage"
-        payload = {"chat_id": chat_id, "text": message, "parse_mode": "Markdown"}
-        requests.post(url, json=payload, timeout=5)
-    except Exception:
-        pass
-
-# ==========================================
-# 3. KALKULASI INDIKATOR SECARA MANUAL (NATIVE)
+# 2. KALKULASI INDIKATOR NATIVE PANDAS
 # ==========================================
 def calculate_ema(series, length):
     return series.ewm(span=length, adjust=False).mean()
@@ -78,128 +67,49 @@ def calculate_rsi(series, length):
     rs = gain / (loss + 1e-10)
     return 100 - (100 / (1 + rs))
 
-def calculate_atr(df, length):
-    high_low = df['High'] - df['Low']
-    high_close = (df['High'] - df['Close'].shift()).abs()
-    low_close = (df['Low'] - df['Close'].shift()).abs()
-    ranges = pd.concat([high_low, high_close, low_close], axis=1)
-    true_range = ranges.max(axis=1)
-    return true_range.rolling(length).mean()
-
 # ==========================================
-# 4. LOGIKA KONEKSI API & STRATEGI BINANCE
+# 3. INTEGRASI API INDODAX SPOT
 # ==========================================
-def fetch_futures_balance(api_key, secret_key, mode):
-    if not api_key or not secret_key:
-        return 0.0, "Kredensial API belum diisi"
+def fetch_indodax_candles(pair, timeframe):
+    # Mapping timeframe ke format Indodax (misal: 4h -> 240)
+    tf_map = {"1m": "1", "5m": "5", "15m": "15", "1h": "60", "4h": "240", "1d": "1D"}
+    tf_indodax = tf_map.get(timeframe, "240")
+    
     try:
-        testnet_mode = True if mode == "Simulasi / Testnet" else False
-        client = Client(api_key, secret_key, testnet=testnet_mode)
-        account_info = client.futures_account()
-        balances = account_info.get('assets', [])
-        for asset in balances:
-            if asset['asset'] == 'USDT':
-                return float(asset['walletBalance']), "Sukses"
-        return 0.0, "Saldo USDT tidak ditemukan"
-    except Exception as e:
-        return 0.0, f"Gagal terhubung ke API: {str(e)}"
-
-def fetch_and_calculate_data(symbol, timeframe, limit, hma_len, ema_len, rsi_len, vol_len, atr_len):
-    try:
-        client = Client()
-        extended_limit = int(limit) + 100
-        klines = client.futures_candles(symbol=symbol, interval=timeframe, limit=extended_limit)
+        url = f"https://indodax.com{pair.upper()}&resolution={tf_indodax}&from={int(time.time())-86400*30}&to={int(time.time())}"
+        res = requests.get(url, timeout=10).json()
         
-        df = pd.DataFrame(klines, columns=[
-            'Timestamp', 'Open', 'High', 'Low', 'Close', 'Volume', 
-            'Close_time', 'Quote_av', 'Trades', 'Tb_base_av', 'Tb_quote_av', 'Ignore'
-        ])
-        
-        for col in ['Open', 'High', 'Low', 'Close', 'Volume']:
-            df[col] = df[col].astype(float)
-            
-        df['EMA'] = calculate_ema(df['Close'], int(ema_len))
-        df['HMA'] = calculate_hma(df['Close'], int(hma_len))
-        df['RSI'] = calculate_rsi(df['Close'], int(rsi_len))
-        df['Vol_MA'] = df['Volume'].rolling(window=int(vol_len)).mean()
-        df['ATR'] = calculate_atr(df, int(atr_len))
-        
-        return df.tail(int(limit)).reset_index(drop=True)
+        df = pd.DataFrame({
+            'Open': res['o'], 'High': res['h'], 'Low': res['l'], 'Close': res['c'], 'Volume': res['v']
+        })
+        return df
     except Exception:
         return None
 
-def check_trading_signals(df):
-    if len(df) < 2: return "WAIT"
-    current = df.iloc[-1]
-    previous = df.iloc[-2]
-    
-    if pd.isna(current['HMA']) or pd.isna(current['EMA']) or pd.isna(current['Vol_MA']):
-        return "WAIT"
-        
-    is_cross_over = (previous['HMA'] <= previous['EMA']) and (current['HMA'] > current['EMA'])
-    is_cross_under = (previous['HMA'] >= previous['EMA']) and (current['HMA'] < current['EMA'])
-    volume_confirmed = current['Volume'] > current['Vol_MA']
-    
-    if is_cross_over and current['RSI'] < 65 and volume_confirmed: return "BUY"
-    elif is_cross_under and current['RSI'] > 35 and volume_confirmed: return "SELL"
-    return "WAIT"
-
-def execute_futures_trade(api_key, secret_key, symbol, side, initial_margin, leverage, sl_mult, tp_ratio, current_price, atr_value, mode, tele_token, tele_id):
+def indodax_private_api(api_key, secret_key, method, params={}):
+    if not api_key or not secret_key:
+        return None, "API Key kosong"
     try:
-        testnet_mode = True if mode == "Simulasi / Testnet" else False
-        client = Client(api_key, secret_key, testnet=testnet_mode)
+        params['method'] = method
+        params['nonce'] = int(time.time() * 1000)
+        post_data = urllib.parse.urlencode(params)
         
-        client.futures_change_leverage(symbol=symbol, leverage=int(leverage))
-        total_buying_power = float(initial_margin) * int(leverage)
-        quantity = round(total_buying_power / current_price, 3)
-        atr_distance = atr_value * float(sl_mult)
+        signature = hmac.new(bytes(secret_key, 'utf-8'), bytes(post_data, 'utf-8'), hashlib.sha512).hexdigest()
+        headers = {'Key': api_key, 'Sign': signature}
         
-        if side == "BUY":
-            sl_price = round(current_price - atr_distance, 2)
-            tp_price = round(current_price + (atr_distance * float(tp_ratio)), 2)
-            order_side, close_side = SIDE_BUY, SIDE_SELL
+        res = requests.post("https://indodax.com", data=params, headers=headers, timeout=10).json()
+        if res.get('success') == 1:
+            return res['return'], "Sukses"
         else:
-            sl_price = round(current_price + atr_distance, 2)
-            tp_price = round(current_price - (atr_distance * float(tp_ratio)), 2)
-            order_side, close_side = SIDE_SELL, SIDE_BUY
-
-        client.futures_create_order(symbol=symbol, side=order_side, type=FUTURE_ORDER_TYPE_MARKET, quantity=quantity)
-        client.futures_create_order(symbol=symbol, side=close_side, type=FUTURE_ORDER_TYPE_STOP_MARKET, stopPrice=sl_price, closePosition=True)
-        client.futures_create_order(symbol=symbol, side=close_side, type=FUTURE_ORDER_TYPE_TAKE_PROFIT_MARKET, stopPrice=tp_price, closePosition=True)
-        
-        msg = f"🚀 *HHMA SNIPER PRO SIGNAL DETECTED*\n\n🔹 *Pair:* {symbol}\n🔹 *Posisi:* {side}\n🔹 *Harga Entry:* ${current_price}\n🔹 *Quantity:* {quantity}\n🛑 *Stop Loss:* ${sl_price}\n🎯 *Take Profit:* ${tp_price}\n⚙️ *Mode:* {mode}"
-        send_telegram_alert(tele_token, tele_id, msg)
-        
-        return True, f"Berhasil {side} {quantity} {symbol}. TP: {tp_price}, SL: {sl_price}"
+            return None, res.get('error', 'Terjadi kesalahan API')
     except Exception as e:
-        return False, f"Gagal Eksekusi Order: {str(e)}"
-
-def execute_emergency_kill(api_key, secret_key, symbol, mode, tele_token, tele_id):
-    try:
-        testnet_mode = True if mode == "Simulasi / Testnet" else False
-        client = Client(api_key, secret_key, testnet=testnet_mode)
-        client.futures_cancel_all_open_orders(symbol=symbol)
-        position_info = client.futures_position_information(symbol=symbol)
-        
-        for pos in position_info:
-            amt = float(pos['positionAmt'])
-            if amt > 0:
-                client.futures_create_order(symbol=symbol, side=SIDE_SELL, type=FUTURE_ORDER_TYPE_MARKET, quantity=abs(amt), reduceOnly=True)
-            elif amt < 0:
-                client.futures_create_order(symbol=symbol, side=SIDE_BUY, type=FUTURE_ORDER_TYPE_MARKET, quantity=abs(amt), reduceOnly=True)
-        
-        msg = f"🚨 *EMERGENCY KILLED!!!*\n\nBot dihentikan paksa. Seluruh antrean order pada {symbol} telah dibatalkan dan posisi aktif berhasil DITUTUP secara instan!"
-        send_telegram_alert(tele_token, tele_id, msg)
-        
-        return True, "Semua order dibatalkan dan seluruh posisi aktif berhasil DITUTUP!"
-    except Exception as e:
-        return False, f"Gagal: {str(e)}"
+        return None, str(e)
 
 # ==========================================
-# 5. ANTARMUKA DESAIN UI (STREAMLIT)
+# 4. ANTARMUKA DESAIN UI (STREAMLIT)
 # ==========================================
-st.set_page_config(page_title="HHMA Renko Sniper Pro", page_icon="🛡️", layout="wide")
-st.title("🛡️ HHMA Renko Sniper Pro - Binance Futures Trading Bot")
+st.set_page_config(page_title="Indodax Sniper Spot Bot", page_icon="🕹️", layout="wide")
+st.title("🕹️ Indodax Sniper Pro - Spot Trading Bot")
 st.write("---")
 
 if 'autopilot' not in st.session_state:
@@ -208,59 +118,39 @@ if 'autopilot' not in st.session_state:
 col_left, col_right = st.columns(2)
 
 with col_left:
-    st.header("🕹️ PANEL KENDALI UTAMA")
-    symbol = st.selectbox("Asset Pair Selector", ["BTCUSDT", "ETHUSDT", "SOLUSDT"], index=0)
-    timeframe = st.selectbox("Timeframe (Fokus Satu TF)", ["1m", "5m", "15m", "1h", "4h", "1d"], index=4)
-    source_data = st.selectbox("Source Data", ["Close", "Open", "High", "Low"], index=0)
+    st.header("⚙️ PANEL STRATEGI INDIKATOR")
+    # Pilihan koin utama di Indodax (Rupiah Market)
+    pair = st.selectbox("Pilih Aset Pasar", ["btc_idr", "eth_idr", "sol_idr"], index=0)
+    timeframe = st.selectbox("Timeframe", ["15m", "1h", "4h", "1d"], index=2)
     
-    candles = st.number_input("Jumlah Lilin di Layar", value=load_setting("candles", 10))
+    candles = st.number_input("Jumlah Lilin di Layar", value=load_setting("candles", 15))
     hma_len = st.number_input("HMA Length", value=load_setting("hma_len", 5))
     ema_len = st.number_input("EMA Length", value=load_setting("ema_len", 5))
     rsi_len = st.number_input("RSI Length", value=load_setting("rsi_len", 5))
-    vol_len = st.number_input("Volume MA Length", value=load_setting("vol_len", 5))
-    atr_len = st.number_input("ATR Length", value=load_setting("atr_len", 5))
-    sl_mult = st.number_input("Stop Loss ATR Mult", value=load_setting("sl_mult", 2.50), step=0.1)
-    chan_mult = st.number_input("Chandelier Trailing Mult", value=load_setting("chan_mult", 1.00), step=0.1)
 
 with col_right:
-    st.header("🔥 PENGATURAN KEUANGAN AGRESIF")
-    margin_type = st.radio("Margin Type", ["Isolated", "Cross"], index=0)
-    initial_margin = st.number_input("Initial Margin ($)", value=load_setting("initial_margin", 100.0))
-    leverage = st.slider("Leverage", min_value=1, max_value=125, value=load_setting("leverage", 25))
-    max_risk = st.number_input("Max Risk per Trade (%)", value=load_setting("max_risk", 2.0))
-    slippage = st.number_input("Slippage Tolerance (%)", value=load_setting("slippage", 0.1))
-    tp_ratio = st.number_input("TP 1 Ratio (Risk:Reward)", value=load_setting("tp_ratio", 1.50))
-    tp_size = st.number_input("TP 1 Size (% Volume Close)", value=load_setting("tp_size", 50))
-    fee = st.number_input("Trading Fee (%)", value=load_setting("fee", 0.04))
+    st.header("💰 MANAGEMENT SALDO SPOT")
+    buy_amount_idr = st.number_input("Jumlah Beli Sekali Transaksi (IDR)", value=load_setting("buy_amount_idr", 50000))
     
-    st.header("🟡 INTEGRASI API BINANCE FUTURES")
-    api_key = st.text_input("Binance API Key", value=load_setting("api_key", ""), type="password")
-    secret_key = st.text_input("Binance Secret Key", value=load_setting("secret_key", ""), type="password")
-    execution_mode = st.radio("Mode Eksekusi", ["Simulasi / Testnet", "Live Real Trading"])
-
-    st.header("📱 NOTIFIKASI TELEGRAM OLEH BOT")
-    tele_token = st.text_input("Telegram Bot Token", value=load_setting("tele_token", ""), type="password")
-    tele_id = st.text_input("Telegram Chat ID", value=load_setting("tele_id", ""))
+    st.header("🔑 KREDENSIAL API INDODAX")
+    api_key = st.text_input("Indodax API Key", value=load_setting("api_key", ""), type="password")
+    secret_key = st.text_input("Indodax Secret Key", value=load_setting("secret_key", ""), type="password")
 
 st.write("---")
 
 # ==========================================
-# 6. KONTROL UTAMA & AUTOPILOT SAKELAR
+# 5. SAKELAR KONTROL AUTOPILOT
 # ==========================================
-col_b1, col_b2, col_b3 = st.columns(3)
+col_b1, col_b2 = st.columns(2)
 
 with col_b1:
-    if st.button("💾 SIMPAN CONFIG", use_container_width=True):
-        config_dict = {
-            "candles": candles, "hma_len": hma_len, "ema_len": ema_len, "rsi_len": rsi_len, 
-            "vol_len": vol_len, "atr_len": atr_len, "sl_mult": sl_mult, "chan_mult": chan_mult, 
-            "initial_margin": initial_margin, "leverage": leverage, "max_risk": max_risk, 
-            "slippage": slippage, "tp_ratio": tp_ratio, "tp_size": tp_size, "fee": fee, 
-            "api_key": api_key, "secret_key": secret_key, "tele_token": tele_token, "tele_id": tele_id
+    if st.button("💾 SIMPAN KONFIGURASI", use_container_width=True):
+        config = {
+            "candles": candles, "hma_len": hma_len, "ema_len": ema_len, "rsi_len": rsi_len,
+            "buy_amount_idr": buy_amount_idr, "api_key": api_key, "secret_key": secret_key
         }
-        for k, v in config_dict.items():
-            save_setting(k, v)
-        st.success("Konfigurasi dan Kredensial Telegram disimpan!")
+        for k, v in config.items(): save_setting(k, v)
+        st.success("Pengaturan Spot Indodax berhasil disimpan!")
 
 with col_b2:
     if st.session_state.autopilot:
@@ -272,52 +162,64 @@ with col_b2:
             st.session_state.autopilot = True
             st.rerun()
 
-with col_b3:
-    if st.button("🚨 EMERGENCY KILL SWITCH", type="primary", use_container_width=True):
-        st.session_state.autopilot = False
-        success, msg = execute_emergency_kill(api_key, secret_key, symbol, execution_mode, tele_token, tele_id)
-        st.error(f"🚨 DARURAT: {msg}")
-
 if st.session_state.autopilot:
-    st_autorefresh(interval=15000, key="bot_loop")
-    st.info("🔄 Mode Autopilot Aktif: Memindai harga real-time setiap 15 detik...")
+    st_autorefresh(interval=20000, key="indodax_loop") # Refresh setiap 20 detik
+    st.info("🔄 Autopilot Aktif: Memindai harga pasar Indodax secara real-time...")
 
 # ==========================================
-# 7. PEMROSESAN DATA LIVE, MONITOR & SCANNING
+# 6. RUNNING PROSES & FILTER KEPUTUSAN
 # ==========================================
+# Tampilkan Saldo Akun Real-time jika API diisi
 if api_key and secret_key:
-    st.write("---")
-    st.subheader("💰 MONITOR SALDO AKUN BINANCE")
-    balance_usdt, status_msg = fetch_futures_balance(api_key, secret_key, execution_mode)
-    if status_msg == "Sukses":
-        st.metric(label=f"Saldo Aktif Wallet ({execution_mode})", value=f"USDT {balance_usdt:,.2f}")
-    else:
-        st.warning(f"⚠️ {status_msg}")
+    balance_data, status = indodax_private_api(api_key, secret_key, "getInfo")
+    if status == "Sukses":
+        saldo_idr = float(balance_data['balance']['idr'])
+        st.metric(label="Saldo Rupiah (IDR) Anda di Indodax", value=f"Rp {saldo_idr:,.0f}")
 
-df_data = fetch_and_calculate_data(symbol, timeframe, candles, hma_len, ema_len, rsi_len, vol_len, atr_len)
+df_data = fetch_indodax_candles(pair, timeframe)
 
 if df_data is not None:
-    latest = df_data.iloc[-1]
+    # Hitung Indikator
+    df_data['EMA'] = calculate_ema(df_data['Close'], int(ema_len))
+    df_data['HMA'] = calculate_hma(df_data['Close'], int(hma_len))
+    df_data['RSI'] = calculate_rsi(df_data['Close'], int(rsi_len))
     
-    st.write("---")
-    st.subheader(f"📊 DATA PASAR REAL-TIME ({symbol})")
-    col_m1, col_m2, col_m3, col_m4 = st.columns(4)
-    col_m1.metric(label="Harga Live", value=f"${latest['Close']:,}")
-    col_m2.metric(label="HMA", value=f"{latest['HMA']:.2f}" if not pd.isna(latest['HMA']) else "Kalkulasi...")
-    col_m3.metric(label="EMA", value=f"{latest['EMA']:.2f}" if not pd.isna(latest['EMA']) else "Kalkulasi...")
-    col_m4.metric(label="RSI", value=f"{latest['RSI']:.2f}" if not pd.isna(latest['RSI']) else "Kalkulasi...")
+    df_display = df_data.tail(int(candles)).reset_index(drop=True)
+    latest = df_display.iloc[-1]
+    previous = df_display.iloc[-2]
     
-    st.line_chart(df_data[['Close', 'HMA', 'EMA']].dropna())
+    # Tampilkan Data Ringkas
+    col_m1, col_m2, col_m3 = st.columns(3)
+    col_m1.metric(label=f"Harga Terakhir {pair.upper()}", value=f"Rp {latest['Close']:,.0f}")
+    col_m2.metric(label="Nilai HMA", value=f"{latest['HMA']:.2f}")
+    col_m3.metric(label="Nilai RSI", value=f"{latest['RSI']:.2f}")
     
-    signal = check_trading_signals(df_data)
-    if signal in ["BUY", "SELL"]:
-        st.subheader(f"🔥 SINYAL {signal} TERDETEKSI!")
-        if st.session_state.autopilot and api_key and secret_key:
-            success, msg = execute_futures_trade(
-                api_key, secret_key, symbol, signal, initial_margin, 
-                leverage, sl_mult, tp_ratio, latest['Close'], latest['ATR'], 
-                execution_mode, tele_token, tele_id
-            )
-            st.success(msg) if success else st.error(msg)
+    st.line_chart(df_display[['Close', 'HMA', 'EMA']])
+    
+    # Logika Sniper Cross Over
+    is_buy_signal = (previous['HMA'] <= previous['EMA']) and (latest['HMA'] > latest['EMA']) and (latest['RSI'] < 65)
+    is_sell_signal = (previous['HMA'] >= previous['EMA']) and (latest['HMA'] < latest['EMA']) and (latest['RSI'] > 35)
+    
+    if is_buy_signal:
+        st.success("🔥 SINYAL BELI (BUY) TERDETEKSI!")
+        if st.session_state.autopilot:
+            # Eksekusi Beli Instan menggunakan Rupiah (IDR)
+            order_params = {'pair': pair, 'type': 'buy', 'idr': int(buy_amount_idr)}
+            res, msg = indodax_private_api(api_key, secret_key, "trade", order_params)
+            st.info(f"Eksekusi Order Beli: {msg}")
+            
+    elif is_sell_signal:
+        st.error("🔥 SINYAL JUAL (SELL) TERDETEKSI!")
+        if st.session_state.autopilot:
+            # Pada mode spot, jual memerlukan info sisa saldo koin Anda
+            coin_name = pair.split('_')[0]
+            if balance_data:
+                sisa_koin = balance_data['balance'].get(coin_name, 0)
+                if float(sisa_koin) > 0:
+                    order_params = {'pair': pair, 'type': 'sell', coin_name: sisa_koin}
+                    res, msg = indodax_private_api(api_key, secret_key, "trade", order_params)
+                    st.info(f"Eksekusi Order Jual: {msg}")
+                else:
+                    st.warning("Sinyal Jual muncul tapi saldo koin Anda 0.")
     else:
-        st.warning("⚪ STATUS PASAR: WAIT / HOLDING (Menunggu Area Pantulan Valid)")
+        st.warning("⚪ STATUS PASAR: HOLDING (Menunggu Persilangan Tren Valid)")
