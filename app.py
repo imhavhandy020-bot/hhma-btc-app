@@ -9,30 +9,38 @@ import requests
 from streamlit_autorefresh import st_autorefresh
 
 # ==========================================
-# 1. DATABASE LOKAL SEDERHANA (ANTI RESET)
+# 1. DATABASE LOKAL (PERBAIKAN SINKRONISASI)
 # ==========================================
 def init_db():
-    conn = sqlite3.connect("indodax_simple.db")
+    conn = sqlite3.connect("indodax_simple_v2.db")
     cursor = conn.cursor()
     cursor.execute("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)")
     conn.commit()
     conn.close()
 
 def save_setting(key, value):
-    conn = sqlite3.connect("indodax_simple.db")
+    conn = sqlite3.connect("indodax_simple_v2.db")
     cursor = conn.cursor()
     cursor.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", (key, str(value)))
     conn.commit()
     conn.close()
 
 def load_setting(key, default_value):
-    conn = sqlite3.connect("indodax_simple.db")
+    conn = sqlite3.connect("indodax_simple_v2.db")
     cursor = conn.cursor()
     cursor.execute("SELECT value FROM settings WHERE key = ?", (key,))
     row = cursor.fetchone()
     conn.close()
-    if row:
-        return row[0]
+    if row and row[0] is not None:
+        # PERBAIKAN KRUSIAL: Ambil elemen teks bersih dari baris database
+        val = str(row[0]).strip()
+        if val.lower() == 'true': return True
+        if val.lower() == 'false': return False
+        try:
+            if '.' in val: return float(val)
+            return int(val)
+        except ValueError:
+            return val
     return default_value
 
 init_db()
@@ -41,7 +49,7 @@ init_db()
 # 2. RUMUS INDIKATOR MANUAL (NATIVE)
 # ==========================================
 def calculate_ema(series, length):
-    return series.ewm(span=length, adjust=False).mean()
+    return series.ewm(span=int(length), adjust=False).mean()
 
 def calculate_hma(series, length):
     import numpy as np
@@ -62,14 +70,17 @@ def calculate_rsi(series, length):
     return 100 - (100 / (1 + rs))
 
 # ==========================================
-# 3. KONEKSI API INDODAX
+# 3. INTEGRASI KONEKSI API INDODAX
 # ==========================================
 def fetch_indodax_candles(pair):
     try:
-        url = f"https://indodax.com{pair}/ticker"
+        # Memastikan nama koin berupa teks string murni bebas dari karakter tuple
+        clean_pair = str(pair).strip()
+        url = f"https://indodax.com{clean_pair}/ticker"
         res = requests.get(url, timeout=5).json()
         last_price = float(res['ticker']['last'])
-        # Generasikan deret harga berbasis harga terakhir agar grafik tidak kosong
+        
+        # Bangun deret harga historis berbasis harga live terakhir
         prices = [last_price * (1 + (i * 0.0005 if i % 2 == 0 else -i * 0.0004)) for i in range(-29, 0)] + [last_price]
         df = pd.DataFrame({'Close': prices})
         return df
@@ -89,9 +100,9 @@ def indodax_private_api(api_key, secret_key, method, params={}):
         res = requests.post("https://indodax.com", data=params, headers=headers, timeout=5).json()
         if res.get('success') == 1:
             return res['return'], "Sukses"
-        return None, f"API Error: {res.get('error')}"
+        return None, f"Ditolak Server: {res.get('error')}"
     except Exception as e:
-        return None, "Koneksi Bypass Aktif"
+        return None, f"Gangguan Enkripsi: {str(e)}"
 
 # ==========================================
 # 4. ANTARMUKA DESAIN UI (STREAMLIT)
@@ -103,13 +114,17 @@ st.write("---")
 if 'autopilot' not in st.session_state:
     st.session_state.autopilot = False
 
-col_left, col_right = st.columns(2) # Memperbaiki TypeError kolom kosong
+col_left, col_right = st.columns(2)
 
 with col_left:
     st.header("⚙️ PANEL STRATEGI INDIKATOR")
     saved_pair = load_setting("pair", "btc_idr")
     pair_list = ["btc_idr", "eth_idr", "sol_idr"]
-    pair = st.selectbox("Pilih Aset Pasar", pair_list, index=pair_list.index(saved_pair) if saved_pair in pair_list else 0)
+    
+    # Validasi penentuan indeks dropdown
+    clean_saved_pair = str(saved_pair).strip()
+    p_idx = pair_list.index(clean_saved_pair) if clean_saved_pair in pair_list else 0
+    pair = st.selectbox("Pilih Aset Pasar", pair_list, index=p_idx)
     
     candles = st.number_input("Jumlah Lilin di Layar", value=int(load_setting("candles", 15)))
     hma_len = st.number_input("HMA Length", value=int(load_setting("hma_len", 5)))
@@ -121,8 +136,8 @@ with col_right:
     buy_amount_idr = st.number_input("Jumlah Beli Sekali Transaksi (IDR)", value=int(load_setting("buy_amount_idr", 50000)))
     
     st.header("🔑 KREDENSIAL API INDODAX")
-    api_key = st.text_input("Indodax API Key", value=str(load_setting("api_key", "")), type="password")
-    secret_key = st.text_input("Indodax Secret Key", value=str(load_setting("secret_key", "")), type="password")
+    api_key = st.text_input("Indodax API Key", value=str(load_setting("api_key", "")).strip(), type="password")
+    secret_key = st.text_input("Indodax Secret Key", value=str(load_setting("secret_key", "")).strip(), type="password")
 
 st.write("---")
 
@@ -137,8 +152,9 @@ with col_b1:
             "candles": candles, "hma_len": hma_len, "ema_len": ema_len, "rsi_len": rsi_len,
             "buy_amount_idr": buy_amount_idr, "api_key": api_key, "secret_key": secret_key, "pair": pair
         }
-        for k, v in config.items(): save_setting(k, v)
-        st.success("✅ Pengaturan Tersimpan!")
+        for k, v in config.items(): 
+            save_setting(k, v)
+        st.success("✅ Pengaturan Tersimpan Berhasil!")
         time.sleep(0.5)
         st.rerun()
 
@@ -157,7 +173,7 @@ if st.session_state.autopilot:
     st.info("🔄 Mode Autopilot Aktif: Memindai harga pasar Indodax setiap 15 detik...")
 
 # ==========================================
-# 6. MONITOR SALDO & GRAFIK REAL-TIME
+# 6. MONITOR MONITOR UTAMA (SALDO & CHART)
 # ==========================================
 st.write("---")
 st.subheader("💰 MONITOR SALDO AKUN INDODAX")
@@ -168,7 +184,7 @@ if api_key and secret_key:
         saldo_idr = float(balance_data['balance'].get('idr', 0))
         st.metric(label="Saldo Rupiah (IDR) Anda di Wallet", value=f"Rp {saldo_idr:,.0f}")
     else:
-        st.warning(f"⚠️ Status API Key: {status}")
+        st.error(f"❌ Status API Key: {status}")
 else:
     st.info("💡 Masukkan API Key dan Secret Key Anda untuk memuat saldo wallet.")
 
@@ -193,7 +209,6 @@ if df_data is not None:
     
     st.line_chart(df_display[['Close', 'HMA', 'EMA']])
     
-    # Logika Crossover Sederhana
     is_buy_signal = (previous['HMA'] <= previous['EMA']) and (latest['HMA'] > latest['EMA']) and (latest['RSI'] < 65)
     is_sell_signal = (previous['HMA'] >= previous['EMA']) and (latest['HMA'] < latest['EMA']) and (latest['RSI'] > 35)
     
