@@ -8,64 +8,77 @@ from plotly.subplots import make_subplots
 st.set_page_config(page_title="HHMA Sniper BTC Max Pro", layout="wide")
 st.title("🛡️ HHMA Renko Sniper Pro - Macro Institutional System")
 
-# --- 1. DEFAULTS & RESET SYSTEM ---
+# --- 1. DEFINISI PENGATURAN AWAL PABRIK ---
 DEFAULTS = {
-    "tf": "4 Jam (4h)", 
-    "src": "Close (Penutupan)", 
-    "jumlah_tampilan": 10,       
-    "l_hma": 5,                 
-    "l_ema": 5,                 
-    "l_rsi": 5,                 
-    "l_vol": 5,                 
-    "l_atr": 5,                 
-    "m_atr": 2.5,               
-    "m_chan": 1.0,              
-    "modal": 100.0,             
-    "lev": 25,                  
-    "r_tp1": 1.50,              
-    "fee": 0.04                 
+    "tf": "4 Jam (4h)", "src": "Close (Penutupan)", "jumlah_tampilan": 10,       
+    "l_hma": 5, "l_ema": 5, "l_rsi": 5, "l_vol": 5, "l_atr": 5,                 
+    "m_atr": 2.5, "m_chan": 1.0, "modal": 100.0, "lev": 25, "r_tp1": 1.50, "fee": 0.04                 
 }
 
-for k, v in DEFAULTS.items():
-    if k not in st.session_state: st.session_state[k] = v
+# --- 2. SISTEM MEMORI MEMBACA DATA URL (ANTI-REFRESH) ---
+# Membaca data kuncian lama dari tautan web browser jika ada
+params = st.query_params
 
-if st.sidebar.button("🔄 Reset ke Pengaturan Awal"):
-    for k, v in DEFAULTS.items(): st.session_state[k] = v
+for k, v in DEFAULTS.items():
+    if k not in st.session_state:
+        if k in params:
+            # Konversi tipe data otomatis sesuai struktur baku
+            if isinstance(v, int): st.session_state[k] = int(params[k])
+            elif isinstance(v, float): st.session_state[k] = float(params[k])
+            else: st.session_state[k] = params[k]
+        else:
+            st.session_state[k] = v
+
+# Fungsi Paksa Reset ke Setelan Pabrik
+def reset_to_factory():
+    for k, v in DEFAULTS.items(): 
+        st.session_state[k] = v
+    # Bersihkan memori tautan url web browser
+    st.query_params.clear()
     st.rerun()
 
-# --- 2. CONTROL PANEL (SIDEBAR - NUMBER INPUT MANUAl) ---
+# --- 3. CONTROL PANEL (SIDEBAR - NUMBER INPUT MANUAl) ---
 st.sidebar.header("🕹️ PANEL KENDALI UTAMA")
 
-# MODIFIKASI: Menghapus 1 Jam (1h) dan 15 Menit (15m) dari daftar pilihan selectbox
+# Tombol Aksi Global
+col_reset = st.sidebar.columns(1)[0]
+if col_reset.button("🔄 Reset ke Pengaturan Awal", help="Menghapus kuncian memori dan kembali ke angka standar pabrik."):
+    reset_to_factory()
+
+st.sidebar.markdown("---")
 tf_options = ["4 Jam (4h)", "1 Hari (Daily)"]
 tf = st.sidebar.selectbox("Timeframe:", options=tf_options, index=tf_options.index(st.session_state.tf) if st.session_state.tf in tf_options else 0)
 
 src_options = ["Close (Penutupan)", "Open (Pembukaan)", "High (Tertinggi)", "Low (Terendah)"]
-src_p = st.sidebar.selectbox("Source Data:", options=src_options, index=src_options.index(st.session_state.src))
+src_p = st.sidebar.selectbox("Source Data:", options=src_options, index=src_options.index(st.session_state.src) if st.session_state.src in src_options else 0)
 
 jumlah_tampilan = st.sidebar.number_input("Jumlah Lilin di Layar:", min_value=10, max_value=300, value=int(st.session_state.jumlah_tampilan), step=10)
 
-l_hma = st.sidebar.number_input("HMA Length:", 2, 50, int(st.session_state.l_hma), 1)
-l_ema = st.sidebar.number_input("EMA Length:", 5, 200, int(st.session_state.l_ema), 1)
-l_rsi = st.sidebar.number_input("RSI Length:", 5, 30, int(st.session_state.l_rsi), 1)
-l_vol = st.sidebar.number_input("Volume MA Length:", 5, 50, int(st.session_state.l_vol), 1)
-l_atr = st.sidebar.number_input("ATR Length:", 5, 30, int(st.session_state.l_atr), 1)
-m_atr = st.sidebar.number_input("Stop Loss ATR Mult:", 1.0, 4.5, float(st.session_state.m_atr), 0.1)
-m_chan = st.sidebar.number_input("Chandelier Trailing Mult:", 1.0, 4.0, float(st.session_state.m_chan), 0.1)
+l_hma = st.sidebar.number_input("HMA Length:", min_value=2, max_value=50, value=int(st.session_state.l_hma), step=1)
+l_ema = st.sidebar.number_input("EMA Length:", min_value=5, max_value=200, value=int(st.session_state.l_ema), step=1)
+l_rsi = st.sidebar.number_input("RSI Length:", min_value=5, max_value=30, value=int(st.session_state.l_rsi), step=1)
+l_vol = st.sidebar.number_input("Volume MA Length:", min_value=5, max_value=50, value=int(st.session_state.l_vol), step=1)
+l_atr = st.sidebar.number_input("ATR Length:", min_value=5, max_value=30, value=int(st.session_state.l_atr), step=1)
+m_atr = st.sidebar.number_input("Stop Loss ATR Mult:", min_value=1.0, max_value=4.5, value=float(st.session_state.m_atr), step=0.1)
+m_chan = st.sidebar.number_input("Chandelier Trailing Mult:", min_value=1.0, max_value=4.0, value=float(st.session_state.m_chan), step=0.1)
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("🔥 Pengaturan Keuangan Agresif")
-modal = st.sidebar.number_input("Initial Margin ($):", 10.0, 100000.0, float(st.session_state.modal), 10.0)
-lev = st.sidebar.number_input("Leverage:", 1, 50, int(st.session_state.lev), 1)
-r_tp1 = st.sidebar.number_input("TP 1 Ratio (Risk:Reward):", 0.3, 5.0, float(st.session_state.r_tp1), 0.1)
-fee = st.sidebar.number_input("Trading Fee (%):", 0.0, 1.0, float(st.session_state.fee), 0.01)
+modal = st.sidebar.number_input("Initial Margin ($):", min_value=10.0, max_value=100000.0, value=float(st.session_state.modal), step=10.0)
+lev = st.sidebar.number_input("Leverage:", min_value=1, max_value=50, value=int(st.session_state.lev), step=1)
+r_tp1 = st.sidebar.number_input("TP 1 Ratio (Risk:Reward):", min_value=0.3, max_value=5.0, value=float(st.session_state.r_tp1), step=0.1)
+fee = st.sidebar.number_input("Trading Fee (%):", min_value=0.0, max_value=1.0, value=float(st.session_state.fee), step=0.01)
 
+# SISTEM PENGUNCI DATA UTAMANYA DI SINI
 if st.sidebar.button("💾 Kunci & Simpan Setelan"):
+    # 1. Update data internal aplikasi
     st.session_state.update({"tf": tf, "src": src_p, "jumlah_tampilan": jumlah_tampilan, "l_hma": l_hma, "l_ema": l_ema, "l_rsi": l_rsi, "l_vol": l_vol, "l_atr": l_atr, "m_atr": m_atr, "m_chan": m_chan, "modal": modal, "lev": lev, "r_tp1": r_tp1, "fee": fee})
-    st.success("Setelan kustom Anda berhasil diperbarui di sistem!")
+    
+    # 2. Suntik data angka langsung ke alamat URL browser agar anti-hilang saat refresh
+    st.query_params.update(tf=tf, src=src_p, jumlah_tampilan=str(jumlah_tampilan), l_hma=str(l_hma), l_ema=str(l_ema), l_rsi=str(l_rsi), l_vol=str(l_vol), l_atr=str(l_atr), m_atr=str(m_atr), m_chan=str(m_chan), modal=str(modal), lev=str(lev), r_tp1=str(r_tp1), fee=str(fee))
+    st.success("💾 Setelan kustom dikunci permanen di alamat web Anda!")
 
-# --- 3. DATA FETCHING & TA CALCULATION ---
-# MODIFIKASI: Memangkas mapping interval dan period khusus untuk 4h dan 1d saja
+# --- 4. DATA FETCHING & TA CALCULATION ---
 t_map = {"4 Jam (4h)": "4h", "1 Hari (Daily)": "1d"}
 p_map = {"4 Jam (4h)": "180d", "1 Hari (Daily)": "730d"}
 s_map = {"Close (Penutupan)": "close", "Open (Pembukaan)": "open", "High (Tertinggi)": "high", "Low (Terendah)": "low"}
@@ -102,13 +115,13 @@ try:
         elif not df.at[i, 'is_g'] and p_short and (df.at[i, 'rsi'] > 45) and (df.at[i, 'volume'] > df.at[i, 'vol_ma']) and last_sig != -1:
             df.at[i, 'sell_sig'] = True; last_sig = -1
 
-    # --- 4. LIVE BANNER SIGNAL ---
+    # --- LIVE BANNER SIGNAL ---
     last = df.iloc[-1]
     if last['buy_sig']: st.success(f"### 🟢 SINYAL AKTIF: LONG SEKARANG! | Entry: ${last['close']:,.2f}")
     elif last['sell_sig']: st.error(f"### 🔴 SINYAL AKTIF: SHORT SEKARANG! | Entry: ${last['close']:,.2f}")
     else: st.info("### ⚪ STATUS PASAR: WAIT / HOLDING (Menunggu Area Pantulan Valid)")
 
-    # --- 5. FIXED PERCENTAGE COMPOUNDING ENGINE ---
+    # --- FIXED PERCENTAGE COMPOUNDING ENGINE ---
     trades = []; active = None; eq_vals = [st.session_state.modal]; eq_times = [df.loc[0, 'date']]
     c_eq = st.session_state.modal
     
@@ -151,7 +164,7 @@ try:
             size = c_eq * 0.30
             active = {'Posisi': "SHORT", 'Entry': df.at[i, 'close'], 'SL': sl, 'TP1_p': df.at[i, 'close'] - (j_sl * st.session_state.r_tp1), 'Margin': size, 'Status': "Running", 'PrevEq': c_eq}
 
-    # --- 6. METRICS & RENDERING GRAPH ---
+    # --- METRICS & RENDERING GRAPH ---
     d_trades = [t for t in trades if t['Status'] != "Running"]
     wr = 0.0; pf = 0.0; mdd = 0.0
     if d_trades:
