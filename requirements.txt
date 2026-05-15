@@ -1,4 +1,7 @@
 pandas
-pandas-ta
 python-binance
 streamlit-autorefresh
+requests
+numpy==1.26.4
+scipy==1.12.0
+https://github.com
