@@ -11,7 +11,7 @@ st.title("🛡️ HHMA Renko 400 BTC - Algoritma Filter Berlapis (Maksimal Akura
 
 # --- SISTEM PENGUNCI SETELAN ANTI REFRESH ---
 query_params = st.query_params
-default_tf = query_params.get("tf", "1 Jam (1h)")  
+default_tf = query_params.get("tf", "5 Menit (5m)")  # Default diubah ke menit
 default_src = query_params.get("src", "Close (Penutupan)")
 try:
     default_len = int(query_params.get("len", "19"))  
@@ -21,8 +21,9 @@ except:
 # Panel Menu Pengaturan Utama
 col1, col2, col3, col4 = st.columns(4)
 with col1:
-    tf_options = ["1 Hari (Daily)", "4 Jam (4h)", "1 Jam (1h)"]
-    tf_index = tf_options.index(default_tf) if default_tf in tf_options else 2
+    # PERBAIKAN: Menambahkan opsi timeframe per menit sesuai limitasi yfinance
+    tf_options = ["1 Hari (Daily)", "4 Jam (4h)", "1 Jam (1h)", "15 Menit (15m)", "5 Menit (5m)", "1 Menit (1m)"]
+    tf_index = tf_options.index(default_tf) if default_tf in tf_options else 4
     tf_pilihan = st.selectbox("Jangka Waktu (Timeframe):", options=tf_options, index=tf_index)
 with col2:
     src_options = ["Close (Penutupan)", "Open (Pembukaan)", "High (Tertinggi)", "Low (Terendah)"]
@@ -48,8 +49,16 @@ st.query_params.update(tf=tf_pilihan, src=src_pilihan, len=str(length_hma))
 
 src_map = {"Close (Penutupan)": "close", "Open (Pembukaan)": "open", "High (Tertinggi)": "high", "Low (Terendah)": "low"}
 src_aktif = src_map[src_pilihan]
-interval_map = {"1 Hari (Daily)": "1d", "4 Jam (4h)": "4h", "1 Jam (1h)": "1h"}
-period_map = {"1 Hari (Daily)": "730d", "4 Jam (4h)": "180d", "1 Jam (1h)": "90d"}
+
+# PERBAIKAN: Pemetaan interval dan period yang disesuaikan dengan aturan API Yahoo Finance
+interval_map = {
+    "1 Hari (Daily)": "1d", "4 Jam (4h)": "4h", "1 Jam (1h)": "1h",
+    "15 Menit (15m)": "15m", "5 Menit (5m)": "5m", "1 Menit (1m)": "1m"
+}
+period_map = {
+    "1 Hari (Daily)": "730d", "4 Jam (4h)": "180d", "1 Jam (1h)": "90d",
+    "15 Menit (15m)": "30d", "5 Menit (5m)": "30d", "1 Menit (1m)": "7d"
+}
 
 @st.cache_data(ttl=30)
 def get_crypto_data(p, i):
@@ -63,7 +72,7 @@ try:
     df = get_crypto_data(period_map[tf_pilihan], interval_map[tf_pilihan])
     
     if df.empty:
-        st.error("Gagal mengambil data dari Yahoo Finance.")
+        st.error("Gagal mengambil data. Pastikan koneksi stabil atau batasi jangkauan hari.")
         st.stop()
 
     # --- PENGHITUNGAN ALGORITMA FILTER BERLAPIS ---
@@ -78,8 +87,9 @@ try:
     df['raw_buy'] = df['is_green'] & (~df['is_green'].shift(1).fillna(False))
     df['raw_sell'] = (~df['is_green']) & df['is_green'].shift(1).fillna(False)
 
-    df['high_accuracy_buy'] = (df['raw_buy'] & (df['close'] > df['ema_200'] * 1.005) & (df['rsi'] > 45) & (df['rsi'] < 58) & (df['atr'] > df['atr_ma']) & (df['volume'] > df['volume_ma']))
-    df['high_accuracy_sell'] = (df['raw_sell'] & (df['close'] < df['ema_200'] * 0.995) & (df['rsi'] > 42) & (df['rsi'] < 55) & (df['atr'] > df['atr_ma']) & (df['volume'] > df['volume_ma']))
+    # Filter Dioptimalkan untuk Karakter Volatilitas Menit (Scalping)
+    df['high_accuracy_buy'] = (df['raw_buy'] & (df['close'] > df['ema_200'] * 1.001) & (df['rsi'] > 42) & (df['rsi'] < 62) & (df['atr'] > df['atr_ma'] * 0.9) & (df['volume'] > df['volume_ma'] * 0.85))
+    df['high_accuracy_sell'] = (df['raw_sell'] & (df['close'] < df['ema_200'] * 0.999) & (df['rsi'] > 38) & (df['rsi'] < 58) & (df['atr'] > df['atr_ma'] * 0.9) & (df['volume'] > df['volume_ma'] * 0.85))
 
     df['buy_signal'] = False
     df['sell_signal'] = False
@@ -96,8 +106,6 @@ try:
     # --- MATRIKS BACKTEST DINAMIS ATR ---
     trades_list = []  
     active_trade = None
-
-    # Tambahkan kolom baru di df utama untuk memetakan visualisasi target ke grafik
     df['chart_tp'] = None
     df['chart_sl'] = None
 
@@ -126,12 +134,10 @@ try:
                 'profit_pct': 0.0,
                 'profit_usd': 0.0
             }
-            
             df.at[i, 'chart_tp'] = live_tp_price
             df.at[i, 'chart_sl'] = live_sl_price
 
         elif active_trade is not None:
-            # Petakan target berjalan ke dalam row df untuk digambar di grafik
             df.at[i, 'chart_tp'] = active_trade['target_tp']
             df.at[i, 'chart_sl'] = active_trade['target_sl']
             
@@ -212,7 +218,7 @@ try:
     fig.add_trace(go.Scatter(x=df_plot['date'], y=df_plot['hma'], name=f"HHMA ({length_hma})", line=dict(color='#ffeb3b', width=2)), row=1, col=1)
     fig.add_trace(go.Scatter(x=df_plot['date'], y=df_plot['ema_200'], name="EMA 200", line=dict(color='#e91e63', width=1.5, dash='dash')), row=1, col=1)
     
-    # PERBAIKAN: Menampilkan Garis Level Target TP dan SL Dinamis Berjalan di Grafik Utama
+    # Menampilkan Garis Level Target TP dan SL Dinamis Berjalan di Grafik Utama
     fig.add_trace(go.Scatter(
         x=df_plot['date'], y=df_plot['chart_tp'], name="Target TP (ATR)", 
         line=dict(color='#00e676', width=1, dash='dot'), connectgaps=False
