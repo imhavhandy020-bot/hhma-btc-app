@@ -11,12 +11,12 @@ st.title("🛡️ HHMA Renko 400 BTC - Algoritma Filter Berlapis (Maksimal Akura
 
 # --- SISTEM PENGUNCI SETELAN ANTI REFRESH ---
 query_params = st.query_params
-default_tf = query_params.get("tf", "1 Jam (1h)")  
+default_tf = query_params.get("tf", "4 Jam (4h)")  
 default_src = query_params.get("src", "Close (Penutupan)")
 try:
-    default_len = int(query_params.get("len", "19"))  
+    default_len = int(query_params.get("len", "20"))  
 except:
-    default_len = 19
+    default_len = 20
 
 # Panel Menu Pengaturan
 col1, col2, col3, col4 = st.columns(4)
@@ -84,8 +84,8 @@ try:
     df['raw_sell'] = (~df['is_green']) & df['is_green'].shift(1).fillna(False)
 
     # --- EKSEKUSI FILTER LEVEL TINGGI (ULTRA SHIELD) ---
-    df['high_accuracy_buy'] = df['raw_buy'] & (df['close'] > df['ema_200']) & (df['rsi'] < 55) & (df['atr'] > df['atr_ma'])
-    df['high_accuracy_sell'] = df['raw_sell'] & (df['close'] < df['ema_200']) & (df['rsi'] > 45) & (df['atr'] > df['atr_ma'])
+    df['high_accuracy_buy'] = df['raw_buy'] & (df['close'] > df['ema_200']) & (df['rsi'] < 60) & (df['atr'] > df['atr_ma'])
+    df['high_accuracy_sell'] = df['raw_sell'] & (df['close'] < df['ema_200']) & (df['rsi'] > 40) & (df['atr'] > df['atr_ma'])
 
     df['buy_signal'] = False
     df['sell_signal'] = False
