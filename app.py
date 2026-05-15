@@ -1,7 +1,7 @@
 import sqlite3
 import pandas as pd
-import pandas_ta as ta
 import streamlit as st
+import requests
 from binance.client import Client
 from binance.enums import *
 from streamlit_autorefresh import st_autorefresh
@@ -43,12 +43,53 @@ def load_setting(key, default_value):
 init_db()
 
 # ==========================================
-# 2. LOGIKA STRATEGI & INSTRUMEN BINANCE
+# 2. SISTEM NOTIFIKASI TELEGRAM
 # ==========================================
+def send_telegram_alert(token, chat_id, message):
+    if not token or not chat_id:
+        return
+    try:
+        url = f"https://telegram.org{token}/sendMessage"
+        payload = {"chat_id": chat_id, "text": message, "parse_mode": "Markdown"}
+        requests.post(url, json=payload, timeout=5)
+    except Exception:
+        pass
+
+# ==========================================
+# 3. KALKULASI INDIKATOR SECARA MANUAL (NATIVE)
+# ==========================================
+def calculate_ema(series, length):
+    return series.ewm(span=length, adjust=False).mean()
+
+def calculate_hma(series, length):
+    import numpy as np
+    half_length = int(length / 2)
+    sqrt_length = int(np.sqrt(length))
+    wma_half = series.rolling(half_length).apply(lambda x: np.dot(x, np.arange(1, half_length + 1)) / np.arange(1, half_length + 1).sum(), raw=True)
+    wma_full = series.rolling(length).apply(lambda x: np.dot(x, np.arange(1, length + 1)) / np.arange(1, length + 1).sum(), raw=True)
+    diff = 2 * wma_half - wma_full
+    hma = diff.rolling(sqrt_length).apply(lambda x: np.dot(x, np.arange(1, sqrt_length + 1)) / np.arange(1, sqrt_length + 1).sum(), raw=True)
+    return hma
+
+def calculate_rsi(series, length):
+    delta = series.diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=length).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=length).mean()
+    rs = gain / (loss + 1e-10)
+    return 100 - (100 / (1 + rs))
+
+def calculate_atr(df, length):
+    high_low = df['High'] - df['Low']
+    high_close = (df['High'] - df['Close'].shift()).abs()
+    low_close = (df['Low'] - df['Close'].shift()).abs()
+    ranges = pd.concat([high_low, high_close, low_close], axis=1)
+    true_range = ranges.max(axis=1)
+    return true_range.rolling(length).mean()
+
 def fetch_and_calculate_data(symbol, timeframe, limit, hma_len, ema_len, rsi_len, vol_len, atr_len):
     try:
         client = Client()
-        extended_limit = int(limit) + 50
+        extended_limit = int(limit) + 100
         klines = client.futures_candles(symbol=symbol, interval=timeframe, limit=extended_limit)
         
         df = pd.DataFrame(klines, columns=[
@@ -59,14 +100,15 @@ def fetch_and_calculate_data(symbol, timeframe, limit, hma_len, ema_len, rsi_len
         for col in ['Open', 'High', 'Low', 'Close', 'Volume']:
             df[col] = df[col].astype(float)
             
-        df['EMA'] = ta.ema(df['Close'], length=int(ema_len))
-        df['HMA'] = ta.hma(df['Close'], length=int(hma_len))
-        df['RSI'] = ta.rsi(df['Close'], length=int(rsi_len))
-        df['Vol_MA'] = ta.sma(df['Volume'], length=int(vol_len))
-        df['ATR'] = ta.atr(df['High'], df['Low'], df['Close'], length=int(atr_len))
+        # Hitung Indikator Menggunakan Fungsi Native Baru
+        df['EMA'] = calculate_ema(df['Close'], int(ema_len))
+        df['HMA'] = calculate_hma(df['Close'], int(hma_len))
+        df['RSI'] = calculate_rsi(df['Close'], int(rsi_len))
+        df['Vol_MA'] = df['Volume'].rolling(window=int(vol_len)).mean()
+        df['ATR'] = calculate_atr(df, int(atr_len))
         
         return df.tail(int(limit)).reset_index(drop=True)
-    except Exception as e:
+    except Exception:
         return None
 
 def check_trading_signals(df):
@@ -74,6 +116,10 @@ def check_trading_signals(df):
     current = df.iloc[-1]
     previous = df.iloc[-2]
     
+    # Validasi penanganan nilai kosong (NaN)
+    if pd.isna(current['HMA']) or pd.isna(current['EMA']) or pd.isna(current['Vol_MA']):
+        return "WAIT"
+        
     is_cross_over = (previous['HMA'] <= previous['EMA']) and (current['HMA'] > current['EMA'])
     is_cross_under = (previous['HMA'] >= previous['EMA']) and (current['HMA'] < current['EMA'])
     volume_confirmed = current['Volume'] > current['Vol_MA']
@@ -82,7 +128,7 @@ def check_trading_signals(df):
     elif is_cross_under and current['RSI'] > 35 and volume_confirmed: return "SELL"
     return "WAIT"
 
-def execute_futures_trade(api_key, secret_key, symbol, side, initial_margin, leverage, sl_mult, tp_ratio, current_price, atr_value, mode):
+def execute_futures_trade(api_key, secret_key, symbol, side, initial_margin, leverage, sl_mult, tp_ratio, current_price, atr_value, mode, tele_token, tele_id):
     try:
         testnet_mode = True if mode == "Simulasi / Testnet" else False
         client = Client(api_key, secret_key, testnet=testnet_mode)
@@ -104,11 +150,15 @@ def execute_futures_trade(api_key, secret_key, symbol, side, initial_margin, lev
         client.futures_create_order(symbol=symbol, side=order_side, type=FUTURE_ORDER_TYPE_MARKET, quantity=quantity)
         client.futures_create_order(symbol=symbol, side=close_side, type=FUTURE_ORDER_TYPE_STOP_MARKET, stopPrice=sl_price, closePosition=True)
         client.futures_create_order(symbol=symbol, side=close_side, type=FUTURE_ORDER_TYPE_TAKE_PROFIT_MARKET, stopPrice=tp_price, closePosition=True)
+        
+        msg = f"🚀 *HHMA SNIPER PRO SIGNAL DETECTED*\n\n🔹 *Pair:* {symbol}\n🔹 *Posisi:* {side}\n🔹 *Harga Entry:* ${current_price}\n🔹 *Quantity:* {quantity}\n🛑 *Stop Loss:* ${sl_price}\n🎯 *Take Profit:* ${tp_price}\n⚙️ *Mode:* {mode}"
+        send_telegram_alert(tele_token, tele_id, msg)
+        
         return True, f"Berhasil {side} {quantity} {symbol}. TP: {tp_price}, SL: {sl_price}"
     except Exception as e:
         return False, f"Gagal Eksekusi Order: {str(e)}"
 
-def execute_emergency_kill(api_key, secret_key, symbol, mode):
+def execute_emergency_kill(api_key, secret_key, symbol, mode, tele_token, tele_id):
     try:
         testnet_mode = True if mode == "Simulasi / Testnet" else False
         client = Client(api_key, secret_key, testnet=testnet_mode)
@@ -121,18 +171,21 @@ def execute_emergency_kill(api_key, secret_key, symbol, mode):
                 client.futures_create_order(symbol=symbol, side=SIDE_SELL, type=FUTURE_ORDER_TYPE_MARKET, quantity=abs(amt), reduceOnly=True)
             elif amt < 0:
                 client.futures_create_order(symbol=symbol, side=SIDE_BUY, type=FUTURE_ORDER_TYPE_MARKET, quantity=abs(amt), reduceOnly=True)
+        
+        msg = f"🚨 *EMERGENCY KILLED!!!*\n\nBot dihentikan paksa. Seluruh antrean order pada {symbol} telah dibatalkan dan posisi aktif berhasil DITUTUP secara instan!"
+        send_telegram_alert(tele_token, tele_id, msg)
+        
         return True, "Semua order dibatalkan dan seluruh posisi aktif berhasil DITUTUP!"
     except Exception as e:
         return False, f"Gagal: {str(e)}"
 
 # ==========================================
-# 3. ANTARMUKA DESAIN UI (STREAMLIT)
+# 4. ANTARMUKA DESAIN UI (STREAMLIT)
 # ==========================================
 st.set_page_config(page_title="HHMA Renko Sniper Pro", page_icon="🛡️", layout="wide")
 st.title("🛡️ HHMA Renko Sniper Pro - Binance Futures Trading Bot")
 st.write("---")
 
-# Pengaturan State untuk Sakelar Autopilot
 if 'autopilot' not in st.session_state:
     st.session_state.autopilot = False
 
@@ -169,25 +222,31 @@ with col_right:
     secret_key = st.text_input("Binance Secret Key", value=load_setting("secret_key", ""), type="password")
     execution_mode = st.radio("Mode Eksekusi", ["Simulasi / Testnet", "Live Real Trading"])
 
+    st.header("📱 NOTIFIKASI TELEGRAM OLEH BOT")
+    tele_token = st.text_input("Telegram Bot Token", value=load_setting("tele_token", ""), type="password")
+    tele_id = st.text_input("Telegram Chat ID", value=load_setting("tele_id", ""))
+
 st.write("---")
 
 # ==========================================
-# 4. KONTROL UTAMA & AUTOPILOT SAKELAR
+# 5. KONTROL UTAMA & AUTOPILOT SAKELAR
 # ==========================================
 col_b1, col_b2, col_b3 = st.columns(3)
 
 with col_b1:
     if st.button("💾 SIMPAN CONFIG", use_container_width=True):
-        for k, v in {"candles": candles, "hma_len": hma_len, "ema_len": ema_len, "rsi_len": rsi_len, 
-                     "vol_len": vol_len, "atr_len": atr_len, "sl_mult": sl_mult, "chan_mult": chan_mult, 
-                     "initial_margin": initial_margin, "leverage": leverage, "max_risk": max_risk, 
-                     "slippage": slippage, "tp_ratio": tp_ratio, "tp_size": tp_size, "fee": fee, 
-                     "api_key": api_key, "secret_key": secret_key}.items():
+        config_dict = {
+            "candles": candles, "hma_len": hma_len, "ema_len": ema_len, "rsi_len": rsi_len, 
+            "vol_len": vol_len, "atr_len": atr_len, "sl_mult": sl_mult, "chan_mult": chan_mult, 
+            "initial_margin": initial_margin, "leverage": leverage, "max_risk": max_risk, 
+            "slippage": slippage, "tp_ratio": tp_ratio, "tp_size": tp_size, "fee": fee, 
+            "api_key": api_key, "secret_key": secret_key, "tele_token": tele_token, "tele_id": tele_id
+        }
+        for k, v in config_dict.items():
             save_setting(k, v)
-        st.success("Konfigurasi disimpan!")
+        st.success("Konfigurasi dan Kredensial Telegram disimpan!")
 
 with col_b2:
-    # Sakelar Toggle Tombol Autopilot
     if st.session_state.autopilot:
         if st.button("🔴 MATIKAN AUTOPILOT", type="secondary", use_container_width=True):
             st.session_state.autopilot = False
@@ -200,39 +259,37 @@ with col_b2:
 with col_b3:
     if st.button("🚨 EMERGENCY KILL SWITCH", type="primary", use_container_width=True):
         st.session_state.autopilot = False
-        success, msg = execute_emergency_kill(api_key, secret_key, symbol, execution_mode)
+        success, msg = execute_emergency_kill(api_key, secret_key, symbol, execution_mode, tele_token, tele_id)
         st.error(f"🚨 DARURAT: {msg}")
 
-# Pemicu loop waktu Autopilot (Refresh setiap 15 detik jika aktif)
 if st.session_state.autopilot:
     st_autorefresh(interval=15000, key="bot_loop")
     st.info("🔄 Mode Autopilot Aktif: Memindai harga real-time setiap 15 detik...")
 
 # ==========================================
-# 5. PEMROSESAN DATA LIVE & SCANNING
+# 6. PEMROSESAN DATA LIVE & SCANNING
 # ==========================================
 df_data = fetch_and_calculate_data(symbol, timeframe, candles, hma_len, ema_len, rsi_len, vol_len, atr_len)
 
 if df_data is not None:
     latest = df_data.iloc[-1]
     
-    # Tampilan Metrik
     col_m1, col_m2, col_m3, col_m4 = st.columns(4)
     col_m1.metric(label=f"Harga Live {symbol}", value=f"${latest['Close']:,}")
-    col_m2.metric(label="HMA", value=f"{latest['HMA']:.2f}")
-    col_m3.metric(label="EMA", value=f"{latest['EMA']:.2f}")
-    col_m4.metric(label="RSI", value=f"{latest['RSI']:.2f}")
+    col_m2.metric(label="HMA", value=f"{latest['HMA']:.2f}" if not pd.isna(latest['HMA']) else "Kalkulasi...")
+    col_m3.metric(label="EMA", value=f"{latest['EMA']:.2f}" if not pd.isna(latest['EMA']) else "Kalkulasi...")
+    col_m4.metric(label="RSI", value=f"{latest['RSI']:.2f}" if not pd.isna(latest['RSI']) else "Kalkulasi...")
     
-    st.line_chart(df_data[['Close', 'HMA', 'EMA']])
+    st.line_chart(df_data[['Close', 'HMA', 'EMA']].dropna())
     
-    # Deteksi Sinyal & Eksekusi Otomatis
     signal = check_trading_signals(df_data)
     if signal in ["BUY", "SELL"]:
         st.subheader(f"🔥 SINYAL {signal} TERDETEKSI!")
         if st.session_state.autopilot and api_key and secret_key:
             success, msg = execute_futures_trade(
                 api_key, secret_key, symbol, signal, initial_margin, 
-                leverage, sl_mult, tp_ratio, latest['Close'], latest['ATR'], execution_mode
+                leverage, sl_mult, tp_ratio, latest['Close'], latest['ATR'], 
+                execution_mode, tele_token, tele_id
             )
             st.success(msg) if success else st.error(msg)
     else:
