@@ -313,7 +313,8 @@ if df_data is not None:
     m3.metric("Volume / MA", f"{latest['Volume']:,.0f} / {latest['Vol_MA']:,.0f}")
     m4.metric("ATR Jarak", f"Rp {latest['ATR']:,.0f}")
     
-    st.line_chart(df_display'Close', 'HMA', 'EMA')
+    st.line_chart(df_display, y=['Close', 'HMA', 'EMA'])
+
     
     # Logika Crossover
     is_cross_over = (previous['HMA'] <= previous['EMA']) and (latest['HMA'] > latest['EMA'])
