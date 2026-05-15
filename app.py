@@ -26,7 +26,6 @@ st.sidebar.header("🕹️ PANEL KENDALI UTAMA")
 tf = st.sidebar.selectbox("Timeframe:", ["4 Jam (4h)", "1 Hari (Daily)", "1 Jam (1h)", "15 Menit (15m)"], index=["4 Jam (4h)", "1 Hari (Daily)", "1 Jam (1h)", "15 Menit (15m)"].index(st.session_state.tf))
 src_p = st.sidebar.selectbox("Source Data:", ["Close (Penutupan)", "Open (Pembukaan)", "High (Tertinggi)", "Low (Terendah)"], index=["Close (Penutupan)", "Open (Pembukaan)", "High (Tertinggi)", "Low (Terendah)"].index(st.session_state.src))
 
-# FIX: Menambahkan kembali input jumlah tampilan yang hilang agar grafik tidak eror
 jumlah_tampilan = st.sidebar.number_input("Jumlah Lilin di Layar:", min_value=10, max_value=300, value=int(st.session_state.jumlah_tampilan), step=10)
 
 l_hma = st.sidebar.number_input("HMA Length:", 2, 50, int(st.session_state.l_hma), 1)
@@ -82,7 +81,8 @@ try:
         
         if df.at[i, 'is_g'] and p_long and (df.at[i, 'rsi'] < 55) and (df.at[i, 'volume'] > df.at[i, 'vol_ma']) and last_sig != 1:
             df.at[i, 'buy_sig'] = True; last_sig = 1
-        elif not df.at[i, 'is_g'] and p_short heartbeat and (df.at[i, 'rsi'] > 45) and (df.at[i, 'volume'] > df.at[i, 'vol_ma']) and last_sig != -1:
+        # PERBAIKAN: Menghapus kata pengganggu 'heartbeat' pada baris logika SHORT di bawah
+        elif not df.at[i, 'is_g'] and p_short and (df.at[i, 'rsi'] > 45) and (df.at[i, 'volume'] > df.at[i, 'vol_ma']) and last_sig != -1:
             df.at[i, 'sell_sig'] = True; last_sig = -1
 
     # --- 4. LIVE BANNER SIGNAL ---
