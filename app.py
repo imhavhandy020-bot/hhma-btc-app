@@ -249,7 +249,9 @@ try:
         })
         
         st.dataframe(
-            df_tabel_final'Waktu Open Posisi', 'Sinyal', 'Harga Entry', 'Status Akhir Kondisi', 'Hasil %', 'Hasil USD'.iloc[::-1].head(5),
+            kolom_pilihan = ['Waktu Open Posisi', 'Sinyal', 'Harga Entry', 'Status Akhir Kondisi', 'Hasil %', 'Hasil USD']
+df_tabel_final[kolom_pilihan].iloc[::-1].head(5)
+
             use_container_width=True, hide_index=True
         )
     else:
