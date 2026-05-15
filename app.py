@@ -5,7 +5,6 @@ import yfinance as yf
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import requests
-import numpy as np
 
 st.set_page_config(page_title="HHMA Renko BTC Futures Max Pro", layout="wide")
 st.title("🛡️ HHMA Renko + EMA Pullback + RSI + Auto Position Sizing + Partial TP & MDD")
@@ -132,6 +131,7 @@ try:
     active_trade = None
     current_equity = modal_awal
     
+    # ARRAY PENETAPAN NILAI AWAL EKUITAS HISTORIS
     equity_timestamps = [df.iloc[0]['date']]
     equity_values = [modal_awal]
 
@@ -316,7 +316,6 @@ try:
         gross_loss = abs(sum([t['Laba Bersih ($ USD)'] for t in losses]))
         profit_factor = gross_profit / gross_loss if gross_loss > 0 else (gross_profit if gross_profit > 0 else 0.0)
 
-        # --- HITUNG MAXIMUM DRAWDOWN ---
         equity_series = pd.Series(equity_values)
         cum_max = equity_series.cummax()
         drawdowns = (equity_series - cum_max) / cum_max
@@ -324,17 +323,17 @@ try:
 
     current_price = df.iloc[-1]['close']
     
-    # --- DASHBOARD METRIK + NEW SUBPLOT MDD ---
+    # --- DASHBOARD METRIK UTAMA ---
     st.markdown("### 📊 Ringkasan Kinerja Sistem Pro (Kombinasi 4 Indikator + MDD)")
     m1, m2, m3, m4, m5, m6 = st.columns(6)
     m1.metric("Harga BTC", f"${current_price:,.2f}")
     m2.metric("Win Rate", f"{win_rate:.2f}%")
     m3.metric("Profit Factor", f"{profit_factor:.2f}" if profit_factor > 0 else "N/A")
-    m4.metric("Max Drawdown (MDD)", f"{max_dd_pct:.2f}%", help="Penurunan modal terbesar hulu ke hilir. Amannya di bawah < 15-20%")
+    m4.metric("Max Drawdown (MDD)", f"{max_dd_pct:.2f}%", help="Penurunan modal terbesar hulu ke hilir.")
     m5.metric("Akumulasi ROI", f"{(total_profit_usd/modal_awal)*100:.2f}%")
     m6.metric("Saldo Akhir", f"${modal_awal + total_profit_usd:,.2f}")
 
-    # --- GRAFIK CHART UTAMA ---
+    # --- VISUALISASI GRAFIK MULTI-INDIKATOR (PERBAIKAN TEMPLATE PLOTLY_DARK) ---
     df_plot = df.tail(jumlah_tampilan)
     fig = make_subplots(rows=4, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_width=[0.12, 0.12, 0.12, 0.64])
     fig.add_trace(go.Candlestick(x=df_plot['date'], open=df_plot['open'], high=df_plot['high'], low=df_plot['low'], close=df_plot['close'], name="Candlestick"), row=1, col=1)
@@ -350,16 +349,20 @@ try:
     fig.add_trace(go.Scatter(x=df_plot['date'], y=df_plot['rsi'], line=dict(color='green', width=1.5), name="RSI"), row=3, col=1)
     fig.add_hline(y=70, line_dash="dash", line_color="red", row=3, col=1); fig.add_hline(y=30, line_dash="dash", line_color="lime", row=3, col=1)
     fig.add_trace(go.Scatter(x=df_plot['date'], y=df_plot['atr'], line=dict(color='magenta', width=1.5), name="ATR"), row=4, col=1)
-    fig.update_layout(height=800, xaxis_rangeslider_visible=False, theme="dark")
+    
+    # PERBAIKAN: Mengganti theme="dark" menjadi template="plotly_dark"
+    fig.update_layout(height=800, xaxis_rangeslider_visible=False, template="plotly_dark")
     st.plotly_chart(fig, use_container_width=True)
 
-    # --- GRAFIK KURVA EKUITAS MODAL ---
+    # --- GRAFIK KURVA EKUITAS MODAL (PERBAIKAN TEMPLATE PLOTLY_DARK) ---
     st.markdown("### 📈 Kurva Pertumbuhan Ekuitas Modal (Equity Curve)")
     if len(equity_values) > 1:
         df_equity = pd.DataFrame({"Waktu": equity_timestamps, "Modal ($ USD)": equity_values})
         fig_equity = go.Figure()
         fig_equity.add_trace(go.Scatter(x=df_equity['Waktu'], y=df_equity['Modal ($ USD)'], mode='lines+markers', line=dict(color='lime', width=2.5), fill='tozeroy', fillcolor='rgba(0, 255, 0, 0.1)', name="Ekuitas"))
-        fig_equity.update_layout(height=350, theme="dark", xaxis_title="Waktu", yaxis_title="Saldo ($ USD)")
+        
+        # PERBAIKAN: Mengganti theme="dark" menjadi template="plotly_dark"
+        fig_equity.update_layout(height=350, template="plotly_dark", xaxis_title="Waktu", yaxis_title="Saldo ($ USD)")
         st.plotly_chart(fig_equity, use_container_width=True)
 
     # --- TABEL HISTORI LOG EKSEKUSI ---
