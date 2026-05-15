@@ -1,4 +1,7 @@
 streamlit
-pandas-ta-classic
-plotly
+pandas
+pandas_ta_classic
 yfinance
+plotly
+requests
+ccxt>=4.2.0
