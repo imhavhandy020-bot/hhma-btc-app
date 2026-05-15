@@ -1,16 +1,18 @@
 import sqlite3
+import pandas as pd
+import pandas_ta as ta
 import streamlit as st
+from binance.client import Client
+from binance.enums import *
+from streamlit_autorefresh import st_autorefresh
 
-# 1. INISIALISASI DATABASE SQLITE
+# ==========================================
+# 1. DATABASE LOKAL (ANTI-LOST CONFIG)
+# ==========================================
 def init_db():
     conn = sqlite3.connect("bot_settings.db")
     cursor = conn.cursor()
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS settings (
-            key TEXT PRIMARY KEY,
-            value TEXT
-        )
-    """)
+    cursor.execute("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)")
     conn.commit()
     conn.close()
 
@@ -28,7 +30,6 @@ def load_setting(key, default_value):
     row = cursor.fetchone()
     conn.close()
     if row:
-        # Konversi tipe data dasar
         val = row[0]
         if val.lower() == 'true': return True
         if val.lower() == 'false': return False
@@ -39,22 +40,106 @@ def load_setting(key, default_value):
             return val
     return default_value
 
-# Jalankan inisialisasi DB
 init_db()
 
-# 2. DESAIN UI STREAMLIT
-st.set_page_config(page_title="HHMA Renko Sniper Pro", page_icon="🛡️", layout="wide")
+# ==========================================
+# 2. LOGIKA STRATEGI & INSTRUMEN BINANCE
+# ==========================================
+def fetch_and_calculate_data(symbol, timeframe, limit, hma_len, ema_len, rsi_len, vol_len, atr_len):
+    try:
+        client = Client()
+        extended_limit = int(limit) + 50
+        klines = client.futures_candles(symbol=symbol, interval=timeframe, limit=extended_limit)
+        
+        df = pd.DataFrame(klines, columns=[
+            'Timestamp', 'Open', 'High', 'Low', 'Close', 'Volume', 
+            'Close_time', 'Quote_av', 'Trades', 'Tb_base_av', 'Tb_quote_av', 'Ignore'
+        ])
+        
+        for col in ['Open', 'High', 'Low', 'Close', 'Volume']:
+            df[col] = df[col].astype(float)
+            
+        df['EMA'] = ta.ema(df['Close'], length=int(ema_len))
+        df['HMA'] = ta.hma(df['Close'], length=int(hma_len))
+        df['RSI'] = ta.rsi(df['Close'], length=int(rsi_len))
+        df['Vol_MA'] = ta.sma(df['Volume'], length=int(vol_len))
+        df['ATR'] = ta.atr(df['High'], df['Low'], df['Close'], length=int(atr_len))
+        
+        return df.tail(int(limit)).reset_index(drop=True)
+    except Exception as e:
+        return None
 
+def check_trading_signals(df):
+    if len(df) < 2: return "WAIT"
+    current = df.iloc[-1]
+    previous = df.iloc[-2]
+    
+    is_cross_over = (previous['HMA'] <= previous['EMA']) and (current['HMA'] > current['EMA'])
+    is_cross_under = (previous['HMA'] >= previous['EMA']) and (current['HMA'] < current['EMA'])
+    volume_confirmed = current['Volume'] > current['Vol_MA']
+    
+    if is_cross_over and current['RSI'] < 65 and volume_confirmed: return "BUY"
+    elif is_cross_under and current['RSI'] > 35 and volume_confirmed: return "SELL"
+    return "WAIT"
+
+def execute_futures_trade(api_key, secret_key, symbol, side, initial_margin, leverage, sl_mult, tp_ratio, current_price, atr_value, mode):
+    try:
+        testnet_mode = True if mode == "Simulasi / Testnet" else False
+        client = Client(api_key, secret_key, testnet=testnet_mode)
+        
+        client.futures_change_leverage(symbol=symbol, leverage=int(leverage))
+        total_buying_power = float(initial_margin) * int(leverage)
+        quantity = round(total_buying_power / current_price, 3)
+        atr_distance = atr_value * float(sl_mult)
+        
+        if side == "BUY":
+            sl_price = round(current_price - atr_distance, 2)
+            tp_price = round(current_price + (atr_distance * float(tp_ratio)), 2)
+            order_side, close_side = SIDE_BUY, SIDE_SELL
+        else:
+            sl_price = round(current_price + atr_distance, 2)
+            tp_price = round(current_price - (atr_distance * float(tp_ratio)), 2)
+            order_side, close_side = SIDE_SELL, SIDE_BUY
+
+        client.futures_create_order(symbol=symbol, side=order_side, type=FUTURE_ORDER_TYPE_MARKET, quantity=quantity)
+        client.futures_create_order(symbol=symbol, side=close_side, type=FUTURE_ORDER_TYPE_STOP_MARKET, stopPrice=sl_price, closePosition=True)
+        client.futures_create_order(symbol=symbol, side=close_side, type=FUTURE_ORDER_TYPE_TAKE_PROFIT_MARKET, stopPrice=tp_price, closePosition=True)
+        return True, f"Berhasil {side} {quantity} {symbol}. TP: {tp_price}, SL: {sl_price}"
+    except Exception as e:
+        return False, f"Gagal Eksekusi Order: {str(e)}"
+
+def execute_emergency_kill(api_key, secret_key, symbol, mode):
+    try:
+        testnet_mode = True if mode == "Simulasi / Testnet" else False
+        client = Client(api_key, secret_key, testnet=testnet_mode)
+        client.futures_cancel_all_open_orders(symbol=symbol)
+        position_info = client.futures_position_information(symbol=symbol)
+        
+        for pos in position_info:
+            amt = float(pos['positionAmt'])
+            if amt > 0:
+                client.futures_create_order(symbol=symbol, side=SIDE_SELL, type=FUTURE_ORDER_TYPE_MARKET, quantity=abs(amt), reduceOnly=True)
+            elif amt < 0:
+                client.futures_create_order(symbol=symbol, side=SIDE_BUY, type=FUTURE_ORDER_TYPE_MARKET, quantity=abs(amt), reduceOnly=True)
+        return True, "Semua order dibatalkan dan seluruh posisi aktif berhasil DITUTUP!"
+    except Exception as e:
+        return False, f"Gagal: {str(e)}"
+
+# ==========================================
+# 3. ANTARMUKA DESAIN UI (STREAMLIT)
+# ==========================================
+st.set_page_config(page_title="HHMA Renko Sniper Pro", page_icon="🛡️", layout="wide")
 st.title("🛡️ HHMA Renko Sniper Pro - Binance Futures Trading Bot")
 st.write("---")
 
-# Layout Kolom Utama
-col_left, col_right = st.columns([1, 1])
+# Pengaturan State untuk Sakelar Autopilot
+if 'autopilot' not in st.session_state:
+    st.session_state.autopilot = False
+
+col_left, col_right = st.columns()
 
 with col_left:
     st.header("🕹️ PANEL KENDALI UTAMA")
-    
-    # Indikator & Timeframe
     symbol = st.selectbox("Asset Pair Selector", ["BTCUSDT", "ETHUSDT", "SOLUSDT"], index=0)
     timeframe = st.selectbox("Timeframe (Fokus Satu TF)", ["1m", "5m", "15m", "1h", "4h", "1d"], index=4)
     source_data = st.selectbox("Source Data", ["Close", "Open", "High", "Low"], index=0)
@@ -70,7 +155,6 @@ with col_left:
 
 with col_right:
     st.header("🔥 PENGATURAN KEUANGAN AGRESIF")
-    
     margin_type = st.radio("Margin Type", ["Isolated", "Cross"], index=0)
     initial_margin = st.number_input("Initial Margin ($)", value=load_setting("initial_margin", 100.0))
     leverage = st.slider("Leverage", min_value=1, max_value=125, value=load_setting("leverage", 25))
@@ -83,44 +167,73 @@ with col_right:
     st.header("🟡 INTEGRASI API BINANCE FUTURES")
     api_key = st.text_input("Binance API Key", value=load_setting("api_key", ""), type="password")
     secret_key = st.text_input("Binance Secret Key", value=load_setting("secret_key", ""), type="password")
-    
     execution_mode = st.radio("Mode Eksekusi", ["Simulasi / Testnet", "Live Real Trading"])
 
 st.write("---")
 
-# 3. TOMBOL AKSI & OPERASIONAL
-col_btn1, col_btn2 = st.columns(2)
+# ==========================================
+# 4. KONTROL UTAMA & AUTOPILOT SAKELAR
+# ==========================================
+col_b1, col_b2, col_b3 = st.columns(3)
 
-with col_btn1:
-    if st.button("💾 SIMPAN PENGATURAN", use_container_width=True):
-        save_setting("candles", candles)
-        save_setting("hma_len", hma_len)
-        save_setting("ema_len", ema_len)
-        save_setting("rsi_len", rsi_len)
-        save_setting("vol_len", vol_len)
-        save_setting("atr_len", atr_len)
-        save_setting("sl_mult", sl_mult)
-        save_setting("chan_mult", chan_mult)
-        save_setting("initial_margin", initial_margin)
-        save_setting("leverage", leverage)
-        save_setting("max_risk", max_risk)
-        save_setting("slippage", slippage)
-        save_setting("tp_ratio", tp_ratio)
-        save_setting("tp_size", tp_size)
-        save_setting("fee", fee)
-        save_setting("api_key", api_key)
-        save_setting("secret_key", secret_key)
-        st.success("Konfigurasi Berhasil Disimpan Ke Database Lokal!")
+with col_b1:
+    if st.button("💾 SIMPAN CONFIG", use_container_width=True):
+        for k, v in {"candles": candles, "hma_len": hma_len, "ema_len": ema_len, "rsi_len": rsi_len, 
+                     "vol_len": vol_len, "atr_len": atr_len, "sl_mult": sl_mult, "chan_mult": chan_mult, 
+                     "initial_margin": initial_margin, "leverage": leverage, "max_risk": max_risk, 
+                     "slippage": slippage, "tp_ratio": tp_ratio, "tp_size": tp_size, "fee": fee, 
+                     "api_key": api_key, "secret_key": secret_key}.items():
+            save_setting(k, v)
+        st.success("Konfigurasi disimpan!")
 
-with col_btn2:
-    if st.button("🚨 EMERGENCY KILL SWITCH - CLOSE ALL & STOP", type="primary", use_container_width=True):
-        st.critical("PERINTAH DARURAT DIEKSEKUSI: Menutup seluruh posisi aktif dan mematikan bot!")
-        # Di sini Anda bisa menyematkan fungsi python-binance `cancel_all_orders` & `close_position`
+with col_b2:
+    # Sakelar Toggle Tombol Autopilot
+    if st.session_state.autopilot:
+        if st.button("🔴 MATIKAN AUTOPILOT", type="secondary", use_container_width=True):
+            st.session_state.autopilot = False
+            st.rerun()
+    else:
+        if st.button("🟢 AKTIFKAN AUTOPILOT", type="primary", use_container_width=True):
+            st.session_state.autopilot = True
+            st.rerun()
 
-# 4. MONITORING STATUS & MONITOR PASAR
-st.write("---")
-st.subheader("⚪ STATUS PASAR: WAIT / HOLDING (Menunggu Area Pantulan Valid)")
-if execution_mode == "Simulasi / Testnet":
-    st.info("🤖 Status Jembatan API Binance: Mode Simulasi Aktif")
-else:
-    st.warning("🚨 LIVE REAL TRADING AKTIF - RISIKO NYATA")
+with col_b3:
+    if st.button("🚨 EMERGENCY KILL SWITCH", type="primary", use_container_width=True):
+        st.session_state.autopilot = False
+        success, msg = execute_emergency_kill(api_key, secret_key, symbol, execution_mode)
+        st.error(f"🚨 DARURAT: {msg}")
+
+# Pemicu loop waktu Autopilot (Refresh setiap 15 detik jika aktif)
+if st.session_state.autopilot:
+    st_autorefresh(interval=15000, key="bot_loop")
+    st.info("🔄 Mode Autopilot Aktif: Memindai harga real-time setiap 15 detik...")
+
+# ==========================================
+# 5. PEMROSESAN DATA LIVE & SCANNING
+# ==========================================
+df_data = fetch_and_calculate_data(symbol, timeframe, candles, hma_len, ema_len, rsi_len, vol_len, atr_len)
+
+if df_data is not None:
+    latest = df_data.iloc[-1]
+    
+    # Tampilan Metrik
+    col_m1, col_m2, col_m3, col_m4 = st.columns(4)
+    col_m1.metric(label=f"Harga Live {symbol}", value=f"${latest['Close']:,}")
+    col_m2.metric(label="HMA", value=f"{latest['HMA']:.2f}")
+    col_m3.metric(label="EMA", value=f"{latest['EMA']:.2f}")
+    col_m4.metric(label="RSI", value=f"{latest['RSI']:.2f}")
+    
+    st.line_chart(df_data[['Close', 'HMA', 'EMA']])
+    
+    # Deteksi Sinyal & Eksekusi Otomatis
+    signal = check_trading_signals(df_data)
+    if signal in ["BUY", "SELL"]:
+        st.subheader(f"🔥 SINYAL {signal} TERDETEKSI!")
+        if st.session_state.autopilot and api_key and secret_key:
+            success, msg = execute_futures_trade(
+                api_key, secret_key, symbol, signal, initial_margin, 
+                leverage, sl_mult, tp_ratio, latest['Close'], latest['ATR'], execution_mode
+            )
+            st.success(msg) if success else st.error(msg)
+    else:
+        st.warning("⚪ STATUS PASAR: WAIT / HOLDING (Menunggu Area Pantulan Valid)")
