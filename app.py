@@ -9,41 +9,36 @@ from streamlit_autorefresh import st_autorefresh
 import requests
 
 # ==========================================
-# 1. DATABASE LOKAL & PENCATAT PERFORMANCE
+# 1. DATABASE LOKAL & PENCATAT PERFORMACE
 # ==========================================
 def init_db():
-    conn = sqlite3.connect("indodax_sim_final.db")
+    conn = sqlite3.connect("indodax_pro_bot.db")
     cursor = conn.cursor()
     cursor.execute("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)")
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS trades (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            pair TEXT, type TEXT, price REAL, amount REAL, time TEXT, mode TEXT
+            pair TEXT, type TEXT, price REAL, amount REAL, time TEXT, status TEXT
         )
     """)
-    # Buat tabel saldo virtual jika belum ada
-    cursor.execute("CREATE TABLE IF NOT EXISTS virtual_wallet (balance REAL, coin_balance REAL)")
-    cursor.execute("SELECT count(*) FROM virtual_wallet")
-    if cursor.fetchone()[0] == 0:
-        cursor.execute("INSERT INTO virtual_wallet VALUES (10000000.0, 0.0)") # Rp 10 Juta Saldo Demo
     conn.commit()
     conn.close()
 
 def save_setting(key, value):
-    conn = sqlite3.connect("indodax_sim_final.db")
+    conn = sqlite3.connect("indodax_pro_bot.db")
     cursor = conn.cursor()
     cursor.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", (key, str(value)))
     conn.commit()
     conn.close()
 
 def load_setting(key, default_value):
-    conn = sqlite3.connect("indodax_sim_final.db")
+    conn = sqlite3.connect("indodax_pro_bot.db")
     cursor = conn.cursor()
     cursor.execute("SELECT value FROM settings WHERE key = ?", (key,))
     row = cursor.fetchone()
     conn.close()
     if row:
-        val = row
+        val = row[0]
         if val.lower() == 'true': return True
         if val.lower() == 'false': return False
         try:
@@ -53,32 +48,17 @@ def load_setting(key, default_value):
             return val
     return default_value
 
-def get_virtual_balance():
-    conn = sqlite3.connect("indodax_sim_final.db")
+def log_trade(pair, trade_type, price, amount, status="PROCESSED"):
+    conn = sqlite3.connect("indodax_pro_bot.db")
     cursor = conn.cursor()
-    cursor.execute("SELECT balance, coin_balance FROM virtual_wallet")
-    row = cursor.fetchone()
-    conn.close()
-    return row[0], row[1]
-
-def update_virtual_balance(idr, coin):
-    conn = sqlite3.connect("indodax_sim_final.db")
-    cursor = conn.cursor()
-    cursor.execute("UPDATE virtual_wallet SET balance = ?, coin_balance = ?", (idr, coin))
+    cursor.execute("INSERT INTO trades (pair, type, price, amount, time, status) VALUES (?, ?, ?, ?, ?, ?)",
+                   (pair, trade_type, price, amount, time.strftime('%Y-%m-%d %H:%M:%S'), status))
     conn.commit()
     conn.close()
 
-def log_trade(pair, trade_type, price, amount, mode):
-    conn = sqlite3.connect("indodax_sim_final.db")
-    cursor = conn.cursor()
-    cursor.execute("INSERT INTO trades (pair, type, price, amount, time, mode) VALUES (?, ?, ?, ?, ?, ?)",
-                   (pair, trade_type, price, amount, time.strftime('%Y-%m-%d %H:%M:%S'), mode))
-    conn.commit()
-    conn.close()
-
-def calculate_performance_metrics(mode):
-    conn = sqlite3.connect("indodax_sim_final.db")
-    df = pd.read_sql_query(f"SELECT * FROM trades WHERE mode='{mode}'", conn)
+def calculate_performance_metrics():
+    conn = sqlite3.connect("indodax_pro_bot.db")
+    df = pd.read_sql_query("SELECT * FROM trades", conn)
     conn.close()
     
     if df.empty or len(df[df['type'] == 'sell']) == 0:
@@ -147,6 +127,7 @@ def fetch_indodax_market_data(pair):
         last_price = float(res['ticker']['last'])
         base_vol = float(res['ticker']['vol_' + pair.split('_')[0]])
         
+        # Membuat deret data historis buatan berbasis real-time ticker
         prices = [last_price * (1 + (i * 0.0006 if i % 2 == 0 else -i * 0.0005)) for i in range(-29, 0)] + [last_price]
         vols = [base_vol * (1 + (i * 0.01 if i % 2 == 0 else -i * 0.01)) for i in range(-29, 0)] + [base_vol]
         
@@ -158,8 +139,7 @@ def fetch_indodax_market_data(pair):
         return None
 
 def indodax_private_api(api_key, secret_key, method, params={}):
-    if not api_key or not secret_key: 
-        return None, "Kredensial Belum Lengkap"
+    if not api_key or not secret_key: return None, "Kredensial Belum Lengkap"
     try:
         params['method'] = method
         params['nonce'] = int(time.time() * 1000)
@@ -167,22 +147,18 @@ def indodax_private_api(api_key, secret_key, method, params={}):
         signature = hmac.new(bytes(secret_key, 'utf-8'), bytes(post_data, 'utf-8'), hashlib.sha512).hexdigest()
         headers = {'Key': api_key, 'Sign': signature}
         res = requests.post("https://indodax.com", data=params, headers=headers, timeout=5).json()
-        if res.get('success') == 1: 
-            return res['return'], "Sukses"
-        else:
-            return None, f"Gagal API: {res.get('error', 'Kunci API Ditolak')}"
-    except Exception as e: 
-        return None, f"Koneksi Bermasalah: {str(e)}"
+        if res.get('success') == 1: return res['return'], "Sukses"
+        return None, res.get('error', 'API Teritolak')
+    except Exception: return None, "Koneksi Bermasalah"
 
 # ==========================================
 # 4. ANTARMUKA PANEL UTAMA (UI)
 # ==========================================
 st.set_page_config(page_title="Indodax Sniper Pro v2", page_icon="🛡️", layout="wide")
-st.title("🛡️ HHMA Renko Sniper Pro - Indodax Edition")
+st.title("🛡️ HHMA Renko Sniper Pro - Indodax Spot Edition")
 st.write("---")
 
-if 'autopilot' not in st.session_state: 
-    st.session_state.autopilot = False
+if 'autopilot' not in st.session_state: st.session_state.autopilot = False
 
 col_left, col_right = st.columns(2)
 
@@ -202,18 +178,13 @@ with col_left:
     sl_atr_mult = st.number_input("Stop Loss ATR Mult", value=float(load_setting("sl_atr_mult", 2.50)), step=0.1)
 
 with col_right:
-    st.header("🔥 PENGATURAN KEUANGAN")
+    st.header("🔥 PENGATURAN KEUANGAN AGRESIF")
     buy_amount_idr = st.number_input("Initial Purchase ($ / IDR)", value=int(load_setting("buy_amount_idr", 50000)))
     trading_fee = st.number_input("Trading Fee (%)", value=float(load_setting("trading_fee", 0.30)))
     
-    # PARAMETER MODE EKSEKUSI (LOCK REFRESH)
-    saved_mode = load_setting("execution_mode", "Simulasi / Testnet")
-    mode_index = 0 if saved_mode == "Simulasi / Testnet" else 1
-    execution_mode = st.radio("Mode Eksekusi", ["Simulasi / Testnet", "Live Real Trading"], index=mode_index)
-
-    st.header("🟡 INTEGRASI API REAL TRADING")
-    api_key = st.text_input("Indodax API Key (Kosongkan jika simulasi)", value=str(load_setting("api_key", "")), type="password")
-    secret_key = st.text_input("Indodax Secret Key (Kosongkan jika simulasi)", value=str(load_setting("secret_key", "")), type="password")
+    st.header("🟡 INTEGRASI API INDODAX")
+    api_key = st.text_input("Indodax API Key", value=str(load_setting("api_key", "")), type="password")
+    secret_key = st.text_input("Indodax Secret Key", value=str(load_setting("secret_key", "")), type="password")
     
     st.header("📱 NOTIFIKASI TELEGRAM")
     tele_token = st.text_input("Telegram Bot Token", value=str(load_setting("tele_token", "")), type="password")
@@ -224,8 +195,8 @@ st.write("---")
 # ==========================================
 # 5. RINGKASAN KINERJA KOMPARATIF
 # ==========================================
-st.header(f"📊 RINGKASAN KINERJA KOMPARATIF ({execution_mode.upper()})")
-win_rate, profit_factor, total_log = calculate_performance_metrics(execution_mode)
+st.header("📊 RINGKASAN KINERJA KOMPARATIF")
+win_rate, profit_factor, total_log = calculate_performance_metrics()
 c1, c2, c3 = st.columns(3)
 c1.metric(label="Win Rate Bot", value=f"{win_rate} %")
 c2.metric(label="Profit Factor", value=f"x {profit_factor}")
@@ -242,11 +213,10 @@ with col_b1:
             "candles": candles, "hma_len": hma_len, "ema_len": ema_len, "rsi_len": rsi_len,
             "vol_ma_len": vol_ma_len, "atr_len": atr_len, "sl_atr_mult": sl_atr_mult,
             "buy_amount_idr": buy_amount_idr, "trading_fee": trading_fee, "api_key": api_key,
-            "secret_key": secret_key, "tele_token": tele_token, "tele_id": tele_id, "pair": pair,
-            "execution_mode": execution_mode
+            "secret_key": secret_key, "tele_token": tele_token, "tele_id": tele_id, "pair": pair
         }
         for k, v in config.items(): save_setting(k, v)
-        st.success("Konfigurasi Berhasil Disimpan!")
+        st.success("Konfigurasi Mutakhir Disimpan Permanen!")
         time.sleep(0.5)
         st.rerun()
 
@@ -262,36 +232,12 @@ with col_b2:
 
 if st.session_state.autopilot:
     st_autorefresh(interval=15000, key="pro_loop")
-    st.info(f"🤖 Status Jembatan API: Mode Autopilot [{execution_mode}] Aktif...")
+    st.info("🤖 Status Jembatan API Indodax: Mode Autopilot Real-Time Aktif...")
 
 # ==========================================
-# 7. MONITOR SALDO (REAL VS VIRTUAL)
+# 7. METRIK UTAMA & PEMINDAIAN PASAR
 # ==========================================
-st.write("---")
-st.subheader("💰 MONITOR SALDO AKUN")
-
-v_idr, v_coin = get_virtual_balance()
-
-if execution_mode == "Live Real Trading":
-    if api_key and secret_key:
-        balance_data, status = indodax_private_api(api_key, secret_key, "getInfo")
-        if status == "Sukses" and balance_data is not None:
-            saldo_idr = float(balance_data['balance'].get('idr', 0))
-            st.metric(label="Saldo Rupiah Real (IDR) Anda", value=f"Rp {saldo_idr:,.0f}")
-        else:
-            st.warning(f"⚠️ {status}")
-    else:
-        st.info("💡 Masukkan API Key & Secret Key untuk live trading.")
-else:
-    # Tampilan Saldo Virtual untuk Mode Simulasi
-    st.info("🎮 Anda sedang berada dalam MODE SIMULASI (Menggunakan Saldo Demo Lokal)")
-    cm1, cm2 = st.columns(2)
-    cm1.metric(label="Saldo Rupiah Virtual (IDR)", value=f"Rp {v_idr:,.0f}")
-    cm2.metric(label=f"Saldo Koin Virtual ({pair.split('_')[0].upper()})", value=f"{v_coin:.6f}")
-
-# ==========================================
-# 8. PEMROSESAN DATA & EKSEKUSI STRATEGI
-# ==========================================
+balance_data, _ = indodax_private_api(api_key, secret_key, "getInfo") if api_key and secret_key else (None, "")
 df_data = fetch_indodax_market_data(pair)
 
 if df_data is not None:
@@ -305,8 +251,7 @@ if df_data is not None:
     latest = df_display.iloc[-1]
     previous = df_display.iloc[-2]
     
-    st.write("---")
-    st.subheader(f"📊 DATA PASAR REAL-TIME ({pair.upper()})")
+    st.subheader("⚪ STATUS PASAR: LIVE MONITORING")
     m1, m2, m3, m4 = st.columns(4)
     m1.metric("Harga Live IDR", f"Rp {latest['Close']:,.0f}")
     m2.metric("HMA Line", f"{latest['HMA']:.2f}")
@@ -315,68 +260,51 @@ if df_data is not None:
     
     st.line_chart(df_display'Close', 'HMA', 'EMA')
     
-    # Logika Crossover
+    # --- LOGIKA MELEBARKAN PROFIT & SNIPER CROSSOVER ---
     is_cross_over = (previous['HMA'] <= previous['EMA']) and (latest['HMA'] > latest['EMA'])
     is_cross_under = (previous['HMA'] >= previous['EMA']) and (latest['HMA'] < latest['EMA'])
     volume_confirmed = latest['Volume'] > latest['Vol_MA']
     
+    # Hitung Jarak Aman Stop Loss Dinamis berbasis ATR
     atr_stop_loss_distance = latest['ATR'] * sl_atr_mult
     current_sl_floor = latest['Close'] - atr_stop_loss_distance
     
-    conn = sqlite3.connect("indodax_sim_final.db")
-    last_buy_trade = pd.read_sql_query(f"SELECT * FROM trades WHERE type='buy' AND mode='{execution_mode}' ORDER BY id DESC LIMIT 1", conn)
+    # Deteksi Riwayat Beli Terakhir untuk Fitur Melebarkan Profit (Trailing Stop)
+    conn = sqlite3.connect("indodax_pro_bot.db")
+    last_buy_trade = pd.read_sql_query("SELECT * FROM trades WHERE type='buy' ORDER BY id DESC LIMIT 1", conn)
     conn.close()
     
     if is_cross_over and latest['RSI'] < 65 and volume_confirmed:
         st.success("🔥 Sinyal BUY Valid Terdeteksi!")
-        if st.session_state.autopilot:
-            if execution_mode == "Live Real Trading" and api_key and secret_key:
-                # Beli Asli
+        if st.session_state.autopilot and balance_data:
+            saldo_idr = float(balance_data['balance'].get('idr', 0))
+            if saldo_idr >= buy_amount_idr:
                 order_params = {'pair': pair, 'type': 'buy', 'idr': int(buy_amount_idr)}
                 res, msg = indodax_private_api(api_key, secret_key, "trade", order_params)
                 if msg == "Sukses":
-                    log_trade(pair, "buy", latest['Close'], buy_amount_idr / latest['Close'], execution_mode)
-                    st.rerun()
-            elif execution_mode == "Simulasi / Testnet":
-                # Beli Simulasi
-                if v_idr >= buy_amount_idr:
-                    new_idr = v_idr - buy_amount_idr
-                    bought_coin = buy_amount_idr / latest['Close']
-                    new_coin = v_coin + bought_coin
-                    update_virtual_balance(new_idr, new_coin)
-                    log_trade(pair, "buy", latest['Close'], bought_coin, execution_mode)
-                    st.success(f"🎰 [SIMULASI BUY] Berhasil membeli {bought_coin:.4f} koin.")
+                    log_trade(pair, "buy", latest['Close'], buy_amount_idr / latest['Close'])
                     st.rerun()
 
     elif not last_buy_trade.empty:
         buy_price = last_buy_trade.loc[0, 'price']
         coin_amt = last_buy_trade.loc[0, 'amount']
         
+        # Logika Amankan Modal: Naikkan batas rugi jika harga melesat jauh di atas harga beli (Trailing)
         if latest['Close'] > buy_price + atr_stop_loss_distance:
-            current_sl_floor = buy_price + (latest['ATR'] * 0.5)
-            st.info(f"🛡️ Pengaman Modal Aktif: Batas Trailing Profit Dikunci pada Level Rp {current_sl_floor:,.0f}")
+            current_sl_floor = buy_price + (latest['ATR'] * 0.5) # Break Even / Secure Capital
+            st.info(f"🛡️ Pengaman Modal Aktif: Batas Jual Minimum Bergeser ke Atas Harga Beli (Rp {current_sl_floor:,.0f})")
             
+        # Sinyal Keluar: Cross Under ATAU Harga Menembus Batas Stop Loss ATR Lapisan Bawah
         if is_cross_under or latest['Close'] <= current_sl_floor:
             st.error("🚨 Sinyal SELL / Stop Loss ATR Terpicu!")
-            if st.session_state.autopilot:
-                if execution_mode == "Live Real Trading" and api_key and secret_key:
-                    # Jual Asli
-                    coin_name = pair.split('_')[0]
-                    sisa_koin = balance_data['balance'].get(coin_name, 0)
-                    if float(sisa_koin) > 0:
-                        order_params = {'pair': pair, 'type': 'sell', coin_name: sisa_koin}
-                        res, msg = indodax_private_api(api_key, secret_key, "trade", order_params)
-                        if msg == "Sukses":
-                            log_trade(pair, "sell", latest['Close'], float(sisa_koin), execution_mode)
-                            st.rerun()
-                elif execution_mode == "Simulasi / Testnet":
-                    # Jual Simulasi
-                    if v_coin > 0:
-                        revenue = v_coin * latest['Close']
-                        new_idr = v_idr + revenue
-                        update_virtual_balance(new_idr, 0.0)
-                        log_trade(pair, "sell", latest['Close'], v_coin, execution_mode)
-                        st.error(f"🎰 [SIMULASI SELL] Berhasil melikuidasi koin. Pendapatan: Rp {revenue:,.0f}")
+            if st.session_state.autopilot and balance_data:
+                coin_name = pair.split('_')[0]
+                sisa_koin = balance_data['balance'].get(coin_name, 0)
+                if float(sisa_koin) > 0:
+                    order_params = {'pair': pair, 'type': 'sell', coin_name: sisa_koin}
+                    res, msg = indodax_private_api(api_key, secret_key, "trade", order_params)
+                    if msg == "Sukses":
+                        log_trade(pair, "sell", latest['Close'], float(sisa_koin))
                         st.rerun()
     else:
         st.warning("⚪ STATUS PASAR: WAIT / HOLDING (Menunggu Area Pantulan Valid)")
