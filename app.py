@@ -8,16 +8,31 @@ from plotly.subplots import make_subplots
 st.set_page_config(page_title="HHMA Sniper BTC Max Pro", layout="wide")
 st.title("🛡️ HHMA Renko Sniper Pro - 4H Institutional System (Compound Boost)")
 
-# --- 1. DEFAULTS & RESET SYSTEM ---
+# =========================================================
+# 💾 MODIFIKASI PERMANEN: SETELAN AWAL BARU SESUAI REQUES Anda
+# =========================================================
 DEFAULTS = {
-    "tf": "4 Jam (4h)", "src": "Close (Penutupan)", "jumlah_tampilan": 150, "l_hma": 16, "l_ema": 50,
-    "l_rsi": 14, "l_vol": 30, "l_atr": 14, "m_atr": 2.5, "m_chan": 2.5,
-    "modal": 1000.0, "lev": 10, "r_tp1": 1.5, "fee": 0.04
+    "tf": "4 Jam (4h)", 
+    "src": "Close (Penutupan)", 
+    "jumlah_tampilan": 10,       # Setelan awal Anda
+    "l_hma": 5,                 # Setelan awal Anda
+    "l_ema": 5,                 # Setelan awal Anda
+    "l_rsi": 5,                 # Setelan awal Anda
+    "l_vol": 5,                 # Setelan awal Anda
+    "l_atr": 5,                 # Setelan awal Anda
+    "m_atr": 2.5,               # Setelan awal Anda (SL ATR Mult)
+    "m_chan": 1.0,              # Setelan awal Anda (Chandelier Mult)
+    "modal": 100.0,             # Setelan awal Anda (Initial Margin)
+    "lev": 25,                  # Setelan awal Anda (Leverage)
+    "r_tp1": 1.50,              # Setelan awal Anda (TP 1 Ratio)
+    "fee": 0.04                 # Setelan awal Anda (Trading Fee)
 }
+
 for k, v in DEFAULTS.items():
     if k not in st.session_state: st.session_state[k] = v
 
-if st.sidebar.button("🔄 Reset Pengaturan Awal"):
+# Tombol reset sekarang akan otomatis mengembalikan ke parameter kustom Anda di atas
+if st.sidebar.button("🔄 Reset ke Pengaturan Awal"):
     for k, v in DEFAULTS.items(): st.session_state[k] = v
     st.rerun()
 
@@ -38,14 +53,14 @@ m_chan = st.sidebar.number_input("Chandelier Trailing Mult:", 1.0, 4.0, float(st
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("🔥 Pengaturan Keuangan Agresif")
-modal = st.sidebar.number_input("Initial Margin ($):", 10.0, 100000.0, float(st.session_state.modal), 100.0)
+modal = st.sidebar.number_input("Initial Margin ($):", 10.0, 100000.0, float(st.session_state.modal), 10.0)
 lev = st.sidebar.number_input("Leverage:", 1, 50, int(st.session_state.lev), 1)
 r_tp1 = st.sidebar.number_input("TP 1 Ratio (Risk:Reward):", 0.3, 5.0, float(st.session_state.r_tp1), 0.1)
 fee = st.sidebar.number_input("Trading Fee (%):", 0.0, 1.0, float(st.session_state.fee), 0.01)
 
 if st.sidebar.button("💾 Kunci & Simpan Setelan"):
     st.session_state.update({"tf": tf, "src": src_p, "jumlah_tampilan": jumlah_tampilan, "l_hma": l_hma, "l_ema": l_ema, "l_rsi": l_rsi, "l_vol": l_vol, "l_atr": l_atr, "m_atr": m_atr, "m_chan": m_chan, "modal": modal, "lev": lev, "r_tp1": r_tp1, "fee": fee})
-    st.success("Setelan berhasil dikunci!")
+    st.success("Setelan kustom Anda berhasil diperbarui di sistem!")
 
 # --- 3. DATA FETCHING & TA CALCULATION ---
 t_map = {"4 Jam (4h)": "4h", "1 Hari (Daily)": "1d", "1 Jam (1h)": "1h", "15 Menit (15m)": "15m"}
@@ -81,7 +96,6 @@ try:
         
         if df.at[i, 'is_g'] and p_long and (df.at[i, 'rsi'] < 55) and (df.at[i, 'volume'] > df.at[i, 'vol_ma']) and last_sig != 1:
             df.at[i, 'buy_sig'] = True; last_sig = 1
-        # PERBAIKAN: Menghapus kata pengganggu 'heartbeat' pada baris logika SHORT di bawah
         elif not df.at[i, 'is_g'] and p_short and (df.at[i, 'rsi'] > 45) and (df.at[i, 'volume'] > df.at[i, 'vol_ma']) and last_sig != -1:
             df.at[i, 'sell_sig'] = True; last_sig = -1
 
