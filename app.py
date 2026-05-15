@@ -4,19 +4,18 @@ import pandas_ta_classic as ta
 import yfinance as yf
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-import streamlit.components.v1 as components  
 
 st.set_page_config(page_title="HHMA Renko BTC Max Pro", layout="wide")
-st.title("🛡️ HHMA Renko 400 BTC - Algoritma Filter Berlapis (Maksimal Akurasi)")
+st.title("🛡️ HHMA Renko 400 BTC - Logika Sinyal Pas Mundur 1")
 
 # --- SISTEM PENGUNCI SETELAN ANTI REFRESH ---
 query_params = st.query_params
 default_tf = query_params.get("tf", "5 Menit (5m)")  
 default_src = query_params.get("src", "Close (Penutupan)")
 try:
-    default_len = int(query_params.get("len", "19"))  
+    default_len = int(query_params.get("len", "5"))  # Default diubah ke 5 sesuai Pine Script Anda
 except:
-    default_len = 19
+    default_len = 5
 
 # Panel Menu Pengaturan Utama
 col1, col2, col3, col4 = st.columns(4)
@@ -40,7 +39,6 @@ leverage = st.sidebar.slider("Leverage (Multiplier):", min_value=1, max_value=50
 
 st.sidebar.markdown("---")
 st.sidebar.header("🎯 Target Risiko Dinamis (ATR)")
-st.sidebar.info("Target harga otomatis mengikuti volatilitas market. Mengecil saat sepi, melebar saat ramai.")
 tp_atr_multiplier = st.sidebar.number_input("Multiplier Take Profit (TP ATR):", min_value=0.5, max_value=10.0, value=3.0, step=0.1)
 sl_atr_multiplier = st.sidebar.number_input("Multiplier Stop Loss (SL ATR):", min_value=0.5, max_value=10.0, value=1.5, step=0.1)
 
@@ -63,16 +61,9 @@ def get_crypto_data(p, i):
     ticker = yf.Ticker("BTC-USD")
     df = ticker.history(period=p, interval=i)
     df = df.reset_index()
-    
-    # PERBAIKAN ZONA WAKTU: Rename kolom tanggal awal sebelum konversi waktu lokal HP
-    if 'Date' in df.columns:
-        df = df.rename(columns={'Date': 'date'})
-    elif 'Datetime' in df.columns:
-        df = df.rename(columns={'Datetime': 'date'})
-        
-    # Mengonversi waktu server global (UTC) menjadi waktu lokal setempat sesuai HP Anda
+    if 'Date' in df.columns: df = df.rename(columns={'Date': 'date'})
+    elif 'Datetime' in df.columns: df = df.rename(columns={'Datetime': 'date'})
     df['date'] = pd.to_datetime(df['date']).dt.tz_convert(None)
-    
     df = df.rename(columns={'Open': 'open', 'High': 'high', 'Low': 'low', 'Close': 'close', 'Volume': 'volume'})
     return df
 
@@ -80,35 +71,36 @@ try:
     df = get_crypto_data(period_map[tf_pilihan], interval_map[tf_pilihan])
     
     if df.empty:
-        st.error("Gagal mengambil data. Pastikan koneksi stabil atau batasi jangkauan hari.")
+        st.error("Gagal mengambil data.")
         st.stop()
 
-    # --- PENGHITUNGAN ALGORITMA FILTER BERLAPIS ---
+    # --- PERHITUNGAN INDIKATOR SESUAI PINE SCRIPT ANDA ---
     df['hma'] = ta.hma(df[src_aktif], length=length_hma)
-    df['ema_200'] = ta.ema(df['close'], length=200)  
-    df['rsi'] = ta.rsi(df['close'], length=14)        
-    df['atr'] = ta.atr(df['high'], df['low'], df['close'], length=14) 
-    df['atr_ma'] = ta.sma(df['atr'], length=20)
-    df['volume_ma'] = ta.sma(df['volume'], length=20)
+    df['atr'] = ta.atr(df['high'], df['low'], df['close'], length=14) # Tetap dihitung untuk TP/SL Dinamis
     
+    # Logika warna kemiringan (is_green / is_red)
     df['is_green'] = df['hma'] >= df['hma'].shift(1)
+    
+    # Pemicu awal perubahan warna pertama kali
     df['raw_buy'] = df['is_green'] & (~df['is_green'].shift(1).fillna(False))
     df['raw_sell'] = (~df['is_green']) & df['is_green'].shift(1).fillna(False)
-
-    df['high_accuracy_buy'] = (df['raw_buy'] & (df['close'] > df['ema_200'] * 1.001) & (df['rsi'] > 42) & (df['rsi'] < 62) & (df['atr'] > df['atr_ma'] * 0.9) & (df['volume'] > df['volume_ma'] * 0.85))
-    df['high_accuracy_sell'] = (df['raw_sell'] & (df['close'] < df['ema_200'] * 0.999) & (df['rsi'] > 38) & (df['rsi'] < 58) & (df['atr'] > df['atr_ma'] * 0.9) & (df['volume'] > df['volume_ma'] * 0.85))
 
     df['buy_signal'] = False
     df['sell_signal'] = False
     last_signal = 0
 
+    # Sistem pengunci status agar sinyal selalu bergantian
     for i in df.index:
-        if df.at[i, 'high_accuracy_buy'] and last_signal != 1:
+        if df.at[i, 'raw_buy'] and last_signal != 1:
             df.at[i, 'buy_signal'] = True
             last_signal = 1
-        elif df.at[i, 'high_accuracy_sell'] and last_signal != -1:
+        elif df.at[i, 'raw_sell'] and last_signal != -1:
             df.at[i, 'sell_signal'] = True
             last_signal = -1
+
+    # EMULASI OFFSET=-1 TRADINGVIEW: Digeser maju 1 bar agar visualisasi backtest sinkron
+    df['display_buy'] = df['buy_signal'].shift(1).fillna(False)
+    df['display_sell'] = df['sell_signal'].shift(1).fillna(False)
 
     # --- MATRIKS BACKTEST DINAMIS ATR ---
     trades_list = []  
@@ -117,7 +109,8 @@ try:
     df['chart_sl'] = None
 
     for i in df.index:
-        if df.at[i, 'buy_signal']:
+        # Menggunakan display_buy/sell hasil pergeseran offset=-1 agar harga eksekusi akurat dengan chart
+        if df.at[i, 'display_buy']:
             if active_trade is not None:
                 loss_pct = ((df.at[i, 'close'] - active_trade['entry_price']) / active_trade['entry_price']) * 100
                 active_trade['status'] = "Selesai (Cut Sinyal Kebalikan)"
@@ -126,7 +119,7 @@ try:
                 trades_list.append(active_trade)
 
             entry_price = df.at[i, 'close']
-            atr_now = df.at[i, 'atr']
+            atr_now = df.at[i, 'atr'] if not pd.isna(df.at[i, 'atr']) else entry_price * 0.01
             
             live_tp_price = entry_price + (atr_now * tp_atr_multiplier)
             live_sl_price = entry_price - (atr_now * sl_atr_multiplier)
@@ -158,7 +151,7 @@ try:
                 active_trade['profit_usd'] = (active_trade['profit_pct'] / 100) * modal_awal
                 trades_list.append(active_trade)
                 active_trade = None
-            elif low_match or df.at[i, 'sell_signal']:
+            elif low_match or df.at[i, 'display_sell']:
                 exit_price = active_trade['target_sl'] if low_match else df.at[i, 'close']
                 real_loss_pct = ((exit_price - active_trade['entry_price']) / active_trade['entry_price']) * 100
                 active_trade['status'] = "🛑 Stop Loss / Exit"
@@ -182,10 +175,10 @@ try:
 
     current_price = df.iloc[-1]['close']
     
-    df_signals = df[df['buy_signal'] | df['sell_signal']]
+    df_signals = df[df['display_buy'] | df['display_sell']]
     if not df_signals.empty:
         last_row = df_signals.iloc[-1]
-        if last_row['buy_signal']:
+        if last_row['display_buy']:
             status_sinyal = "🟢 BUY (Masuk Posisi)"
             waktu_sinyal = last_row['date'].strftime('%Y-%m-%d %H:%M')
             harga_sinyal = f"${last_row['close']:,.2f}"
@@ -213,59 +206,59 @@ try:
     st.subheader("📈 Grafik Analisis Multi-Indikator Live")
     
     df_plot = df.iloc[-jumlah_tampilan:].copy()
-    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.05, row_heights=[0.7, 0.3])
+    fig = make_subplots(rows=1, cols=1) # Disederhanakan menjadi 1 Row tanpa subplot RSI
     
     # Candlestick
     fig.add_trace(go.Candlestick(
         x=df_plot['date'], open=df_plot['open'], high=df_plot['high'], low=df_plot['low'], close=df_plot['close'],
         name="Bitcoin (BTC)", increasing_line_color='#26a69a', decreasing_line_color='#ef5350'
-    ), row=1, col=1)
+    ))
     
-    # Indikator Tren
-    fig.add_trace(go.Scatter(x=df_plot['date'], y=df_plot['hma'], name=f"HHMA ({length_hma})", line=dict(color='#ffeb3b', width=2)), row=1, col=1)
-    fig.add_trace(go.Scatter(x=df_plot['date'], y=df_plot['ema_200'], name="EMA 200", line=dict(color='#e91e63', width=1.5, dash='dash')), row=1, col=1)
+    # Garis HHMA Dinamis Berubah Warna per Segmen Lilin
+    # Memisahkan warna segmen garis berdasarkan status is_green
+    for i in range(1, len(df_plot)):
+        p1 = df_plot.iloc[i-1]
+        p2 = df_plot.iloc[i]
+        line_color = '#00e676' if p2['is_green'] else '#ff1744'
+        fig.add_trace(go.Scatter(
+            x=[p1['date'], p2['date']], y=[p1['hma'], p2['hma']],
+            mode='lines', line=dict(color=line_color, width=3), showlegend=False, hoverinfo='skip'
+        ))
     
-    # Menampilkan Garis Level Target TP dan SL Dinamis Berjalan di Grafik Utama
+    # Menampilkan Garis Level Target TP dan SL Dinamis Berjalan di Grafik
     fig.add_trace(go.Scatter(
         x=df_plot['date'], y=df_plot['chart_tp'], name="Target TP (ATR)", 
         line=dict(color='#00e676', width=1, dash='dot'), connectgaps=False
-    ), row=1, col=1)
-    
+    ))
     fig.add_trace(go.Scatter(
         x=df_plot['date'], y=df_plot['chart_sl'], name="Target SL (ATR)", 
         line=dict(color='#ff1744', width=1, dash='dot'), connectgaps=False
-    ), row=1, col=1)
+    ))
     
-    # Penempatan Penanda Sinyal Grafik
-    buy_markers = df_plot[df_plot['buy_signal']]
-    sell_markers = df_plot[df_plot['sell_signal']]
+    # Penempatan Penanda Sinyal Grafik (Mengikuti nilai hma[1] persis seperti lekukan Pine Script)
+    buy_markers = df_plot[df_plot['display_buy']]
+    sell_markers = df_plot[df_plot['display_sell']]
     
     fig.add_trace(go.Scatter(
-        x=buy_markers['date'], y=buy_markers['low'] * 0.99, mode='markers',
+        x=buy_markers['date'], y=buy_markers['hma'].shift(1), mode='markers',
         name='Sinyal BUY', marker=dict(symbol='triangle-up', size=14, color='#00e676', line=dict(width=1, color='white'))
-    ), row=1, col=1)
+    ))
     
     fig.add_trace(go.Scatter(
-        x=sell_markers['date'], y=sell_markers['high'] * 1.01, mode='markers',
+        x=sell_markers['date'], y=sell_markers['hma'].shift(1), mode='markers',
         name='Sinyal EXIT', marker=dict(symbol='triangle-down', size=14, color='#ff1744', line=dict(width=1, color='white'))
-    ), row=1, col=1)
+    ))
     
-    # Subplot Sub-Panel RSI
-    fig.add_trace(go.Scatter(x=df_plot['date'], y=df_plot['rsi'], name="RSI (14)", line=dict(color='#29b6f6', width=1.5)), row=2, col=1)
-    
-    fig.update_layout(height=650, xaxis_rangeslider_visible=False, template="plotly_dark", margin=dict(l=10, r=10, t=10, b=10))
+    fig.update_layout(height=600, xaxis_rangeslider_visible=False, template="plotly_dark", margin=dict(l=10, r=10, t=10, b=10))
     st.plotly_chart(fig, use_container_width=True)
 
-    # --- TABEL RIWAYAT TRANSAKSI RESMI ---
+    # --- TABEL RIWAYAT TRANSAKSI RESMI (TERBARU DI ATAS) ---
     if trades_list:
         st.subheader("📜 Riwayat Transaksi Backtest")
         df_trades_report = pd.DataFrame(trades_list)
         cols_order = ['waktu_entry', 'jenis', 'entry_price', 'target_tp', 'target_sl', 'status', 'profit_pct', 'profit_usd']
         df_trades_report = df_trades_report.reindex(columns=[c for c in cols_order if c in df_trades_report.columns])
-        
-        # PERBAIKAN TABEL: Membalik urutan data (Invert Index) agar transaksi terbaru berada di baris paling atas
-        df_inverted = df_trades_report.iloc[::-1]
-        st.dataframe(df_inverted, use_container_width=True)
+        st.dataframe(df_trades_report.iloc[::-1], use_container_width=True)
 
 except Exception as e:
     st.error(f"Terjadi kesalahan teknis sistem: {e}")
