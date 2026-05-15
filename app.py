@@ -10,7 +10,7 @@ st.title("🛡️ HHMA Renko Sniper Pro - 4H Institutional System (Compound Boos
 
 # --- 1. DEFAULTS & RESET SYSTEM ---
 DEFAULTS = {
-    "tf": "4 Jam (4h)", "src": "Close (Penutupan)", "l_hma": 16, "l_ema": 50,
+    "tf": "4 Jam (4h)", "src": "Close (Penutupan)", "jumlah_tampilan": 150, "l_hma": 16, "l_ema": 50,
     "l_rsi": 14, "l_vol": 30, "l_atr": 14, "m_atr": 2.5, "m_chan": 2.5,
     "modal": 1000.0, "lev": 10, "r_tp1": 1.5, "fee": 0.04
 }
@@ -25,6 +25,9 @@ if st.sidebar.button("🔄 Reset Pengaturan Awal"):
 st.sidebar.header("🕹️ PANEL KENDALI UTAMA")
 tf = st.sidebar.selectbox("Timeframe:", ["4 Jam (4h)", "1 Hari (Daily)", "1 Jam (1h)", "15 Menit (15m)"], index=["4 Jam (4h)", "1 Hari (Daily)", "1 Jam (1h)", "15 Menit (15m)"].index(st.session_state.tf))
 src_p = st.sidebar.selectbox("Source Data:", ["Close (Penutupan)", "Open (Pembukaan)", "High (Tertinggi)", "Low (Terendah)"], index=["Close (Penutupan)", "Open (Pembukaan)", "High (Tertinggi)", "Low (Terendah)"].index(st.session_state.src))
+
+# FIX: Menambahkan kembali input jumlah tampilan yang hilang agar grafik tidak eror
+jumlah_tampilan = st.sidebar.number_input("Jumlah Lilin di Layar:", min_value=10, max_value=300, value=int(st.session_state.jumlah_tampilan), step=10)
 
 l_hma = st.sidebar.number_input("HMA Length:", 2, 50, int(st.session_state.l_hma), 1)
 l_ema = st.sidebar.number_input("EMA Length:", 5, 200, int(st.session_state.l_ema), 1)
@@ -42,7 +45,7 @@ r_tp1 = st.sidebar.number_input("TP 1 Ratio (Risk:Reward):", 0.3, 5.0, float(st.
 fee = st.sidebar.number_input("Trading Fee (%):", 0.0, 1.0, float(st.session_state.fee), 0.01)
 
 if st.sidebar.button("💾 Kunci & Simpan Setelan"):
-    st.session_state.update({"tf": tf, "src": src_p, "l_hma": l_hma, "l_ema": l_ema, "l_rsi": l_rsi, "l_vol": l_vol, "l_atr": l_atr, "m_atr": m_atr, "m_chan": m_chan, "modal": modal, "lev": lev, "r_tp1": r_tp1, "fee": fee})
+    st.session_state.update({"tf": tf, "src": src_p, "jumlah_tampilan": jumlah_tampilan, "l_hma": l_hma, "l_ema": l_ema, "l_rsi": l_rsi, "l_vol": l_vol, "l_atr": l_atr, "m_atr": m_atr, "m_chan": m_chan, "modal": modal, "lev": lev, "r_tp1": r_tp1, "fee": fee})
     st.success("Setelan berhasil dikunci!")
 
 # --- 3. DATA FETCHING & TA CALCULATION ---
@@ -79,7 +82,7 @@ try:
         
         if df.at[i, 'is_g'] and p_long and (df.at[i, 'rsi'] < 55) and (df.at[i, 'volume'] > df.at[i, 'vol_ma']) and last_sig != 1:
             df.at[i, 'buy_sig'] = True; last_sig = 1
-        elif not df.at[i, 'is_g'] and p_short and (df.at[i, 'rsi'] > 45) and (df.at[i, 'volume'] > df.at[i, 'vol_ma']) and last_sig != -1:
+        elif not df.at[i, 'is_g'] and p_short heartbeat and (df.at[i, 'rsi'] > 45) and (df.at[i, 'volume'] > df.at[i, 'vol_ma']) and last_sig != -1:
             df.at[i, 'sell_sig'] = True; last_sig = -1
 
     # --- 4. LIVE BANNER SIGNAL ---
@@ -123,13 +126,11 @@ try:
         if df.at[i, 'buy_sig'] and not active:
             sl = df.at[i, 'close'] - (df.at[i, 'atr'] * st.session_state.m_atr)
             j_sl = abs(df.at[i, 'close'] - sl)
-            # FIX: Mengunci alokasi margin statis sebesar 30% dari total saldo akun berjalan
             size = c_eq * 0.30
             active = {'Posisi': "LONG", 'Entry': df.at[i, 'close'], 'SL': sl, 'TP1_p': df.at[i, 'close'] + (j_sl * st.session_state.r_tp1), 'Margin': size, 'Status': "Running", 'PrevEq': c_eq}
         elif df.at[i, 'sell_sig'] and not active:
             sl = df.at[i, 'close'] + (df.at[i, 'atr'] * st.session_state.m_atr)
             j_sl = abs(sl - df.at[i, 'close'])
-            # FIX: Mengunci alokasi margin statis sebesar 30% dari total saldo akun berjalan
             size = c_eq * 0.30
             active = {'Posisi': "SHORT", 'Entry': df.at[i, 'close'], 'SL': sl, 'TP1_p': df.at[i, 'close'] - (j_sl * st.session_state.r_tp1), 'Margin': size, 'Status': "Running", 'PrevEq': c_eq}
 
@@ -151,7 +152,7 @@ try:
     r4.metric("Compound ROI", f"{((c_eq - st.session_state.modal)/st.session_state.modal)*100:.2f}%")
     r5.metric("Saldo Akhir", f"${c_eq:,.2f}")
 
-    df_p = df.tail(jumlah_tampilan)
+    df_p = df.tail(int(st.session_state.jumlah_tampilan))
     fig = make_subplots(rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.04, row_width=[0.2, 0.2, 0.6])
     fig.add_trace(go.Candlestick(x=df_p['date'], open=df_p['open'], high=df_p['high'], low=df_p['low'], close=df_p['close'], name="Lilin"), row=1, col=1)
     fig.add_trace(go.Scatter(x=df_p['date'], y=df_p['hma'], line=dict(color='yellow', width=2), name="HMA"), row=1, col=1)
