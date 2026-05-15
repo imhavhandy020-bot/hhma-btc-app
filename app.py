@@ -4,7 +4,7 @@ import pandas_ta_classic as ta
 import yfinance as yf
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-import ccxt  # Pustaka penghubung bursa crypto
+import ccxt 
 
 st.set_page_config(page_title="HHMA Sniper BTC Max Pro", layout="wide")
 st.title("🛡️ HHMA Renko Sniper Pro - Binance Futures Trading Bot")
@@ -48,7 +48,6 @@ lev = st.sidebar.number_input("Leverage:", min_value=1, max_value=50, value=int(
 r_tp1 = st.sidebar.number_input("TP 1 Ratio (Risk:Reward):", min_value=0.3, max_value=5.0, value=float(st.session_state.r_tp1), step=0.1)
 fee = st.sidebar.number_input("Trading Fee (%):", min_value=0.0, max_value=1.0, value=float(st.session_state.fee), step=0.01)
 
-# INTEGRASI BARU: Panel API Key Binance Kedap Enkripsi
 st.sidebar.markdown("---")
 st.sidebar.subheader("🟡 INTEGRASI API BINANCE FUTURES")
 api_key = st.sidebar.text_input("Binance API Key:", type="password")
@@ -60,49 +59,33 @@ if st.sidebar.button("💾 Kunci & Simpan Setelan"):
     st.query_params.update(tf=tf, src=src_p, jumlah_tampilan=str(jumlah_tampilan), l_hma=str(l_hma), l_ema=str(l_ema), l_rsi=str(l_rsi), l_vol=str(l_vol), l_atr=str(l_atr), m_atr=str(m_atr), m_chan=str(m_chan), modal=str(modal), lev=str(lev), r_tp1=str(r_tp1), fee=str(fee))
     st.success("💾 Parameter kustom dan akses API terkunci permanen!")
 
-# =========================================================
-# ⚙️ INTEGRASI BARU: MESIN EKSEKUSI API BINANCE DERIVATIF
-# =========================================================
+# --- API BINANCE ORDER EXECUTION ---
 def execute_live_binance_order(posisi, entry_price, margin_size):
     if not api_key or not secret_key:
         return "⚠️ API Key kosong. Eksekusi Live dilewati."
-    
     try:
-        # Inisialisasi koneksi aman CCXT ke Binance Futures
         exchange = ccxt.binance({
-            'apiKey': api_key,
-            'secret': secret_key,
-            'options': {'defaultType': 'future'},
-            'enableRateLimit': True
+            'apiKey': api_key, 'secret': secret_key,
+            'options': {'defaultType': 'future'}, 'enableRateLimit': True
         })
-        
-        # Alihkan ke server simulasi uang demo jika memilih mode Testnet
         if mode_trading == "Simulasi / Testnet":
             exchange.set_sandbox_mode(True)
-            
         symbol = 'BTC/USDT'
-        
-        # 1. Samakan setelan leverage akun Binance dengan aplikasi Streamlit Anda
         exchange.fapiPrivatePostLeverage({'symbol': 'BTCUSDT', 'leverage': int(st.session_state.lev)})
-        
-        # 2. Hitung jumlah kontrak BTC (lot) berdasarkan margin nominal dolar
         quantity_btc = (float(margin_size) * float(st.session_state.lev)) / float(entry_price)
-        quantity_btc = round(quantity_btc, 3) # Memastikan akurasi desimal lot bursa
+        quantity_btc = round(quantity_btc, 3)
+        if quantity_btc <= 0: return "❌ Ukuran Margin terlalu kecil."
         
-        if quantity_btc <= 0: return "❌ Ukuran Margin tidak mencukupi untuk minimum lot bursa."
-
-        # 3. Kirim Market Order langsung ke Server Binance
         if posisi == "LONG":
-            order = exchange.create_market_buy_order(symbol, quantity_btc)
-            return f"🚀 Binance Order Sukses: Market LONG {quantity_btc} BTC"
+            exchange.create_market_buy_order(symbol, quantity_btc)
+            return f"🚀 Binance Sukses: LONG {quantity_btc} BTC"
         elif posisi == "SHORT":
-            order = exchange.create_market_sell_order(symbol, quantity_btc)
-            return f"📉 Binance Order Sukses: Market SHORT {quantity_btc} BTC"
-            
+            exchange.create_market_sell_order(symbol, quantity_btc)
+            return f"📉 Binance Sukses: SHORT {quantity_btc} BTC"
     except Exception as e:
-        return f"❌ Kegagalan Eksekusi API Binance: {str(e)}"
+        return f"❌ Gagal API Binance: {str(e)}"
 
-# --- 4. DATA FETCHING & TA CALCULATION ---
+# --- 3. DATA FETCHING & TA CALCULATION ---
 t_map = {"4 Jam (4h)": "4h", "1 Hari (Daily)": "1d"}
 p_map = {"4 Jam (4h)": "180d", "1 Hari (Daily)": "730d"}
 s_map = {"Close (Penutupan)": "close", "Open (Pembukaan)": "open", "High (Tertinggi)": "high", "Low (Terendah)": "low"}
@@ -115,8 +98,12 @@ def load_data(p, i):
 
 try:
     df = load_data(p_map[st.session_state.tf], t_map[st.session_state.tf])
-    # Konversi waktu agar sinkron dengan Waktu Indonesia Barat (WIB)
-    df['date'] = pd.to_datetime(df['date']).dt.tz_localize('UTC').dt.tz_convert('Asia/Jakarta').dt.tz_localize(None)
+    
+    # PERBAIKAN TOTAL BUG: Logika Cek Status Zona Waktu (Tz-Safe Engine)
+    if df['date'].dt.tz is not None:
+        df['date'] = df['date'].dt.tz_convert('Asia/Jakarta').dt.tz_localize(None)
+    else:
+        df['date'] = df['date'].dt.tz_localize('UTC').dt.tz_convert('Asia/Jakarta').dt.tz_localize(None)
     
     df['hma'] = ta.hma(df[s_map[st.session_state.src]], length=st.session_state.l_hma)
     df['ema'] = ta.ema(df['close'], length=st.session_state.l_ema)
@@ -140,7 +127,7 @@ try:
         elif not df.at[i, 'is_g'] and p_short and (df.at[i, 'rsi'] > 45) and (df.at[i, 'volume'] > df.at[i, 'vol_ma']) and last_sig != -1:
             df.at[i, 'sell_sig'] = True; last_sig = -1
 
-    # --- LIVE BANNER SIGNAL + INTEGRASI TRIGGER TRADING BINANCE ---
+    # --- LIVE BANNER SIGNAL ---
     last = df.iloc[-1]
     binance_status = "Mode Simulasi Aktif"
     if last['buy_sig']: 
