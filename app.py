@@ -4,420 +4,168 @@ import pandas_ta_classic as ta
 import yfinance as yf
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-import requests
-from datetime import datetime, time
-import ccxt
 
-st.set_page_config(page_title="HHMA Sniper BTC Futures Max Pro", layout="wide")
-st.title("🛡️ HHMA Renko Sniper Pro - 4H Institutional System (Binance Live Ready)")
+st.set_page_config(page_title="HHMA Sniper BTC Max Pro", layout="wide")
+st.title("🛡️ HHMA Renko Sniper Pro - 4H Institutional System")
 
-# ==========================================
-# 💾 SISTEM PENYIMPANAN PARSING & RESET STATE
-# ==========================================
+# --- 1. DEFAULTS & RESET SYSTEM ---
 DEFAULTS = {
-    "tf_pilihan": "4 Jam (4h)",
-    "src_pilihan": "Close (Penutupan)",
-    "jumlah_tampilan": 150,
-    "length_hma": 16,
-    "length_ema": 50,
-    "length_rsi": 14,
-    "length_vol_ma": 30,
-    "length_atr": 14,
-    "atr_multiplier": 3.5,
-    "chandelier_mult": 2.0,
-    "modal_awal": 1000.0,
-    "leverage": 10,
-    "risiko_per_trade_pct": 1.0,
-    "tp1_ratio": 0.5,
-    "tp2_ratio": 1.5,
-    "trading_fee_pct": 0.04,
-    "session_filter_active": False,
-    "start_hour": 14,
-    "end_hour": 23,
-    "binance_api_key": "",
-    "binance_secret_key": "",
-    "live_trading_active": False,
-    "telegram_token": "",
-    "telegram_chat_id": ""
+    "tf": "4 Jam (4h)", "src": "Close (Penutupan)", "l_hma": 16, "l_ema": 50,
+    "l_rsi": 14, "l_vol": 30, "l_atr": 14, "m_atr": 3.5, "m_chan": 2.0,
+    "modal": 1000.0, "lev": 10, "risk": 1.0, "r_tp1": 0.5, "r_tp2": 1.5, "fee": 0.04
 }
+for k, v in DEFAULTS.items():
+    if k not in st.session_state: st.session_state[k] = v
 
-# Inisialisasi Session State Jika Belum Terbentuk
-for key, val in DEFAULTS.items():
-    if key not in st.session_state:
-        st.session_state[key] = val
+if st.sidebar.button("🔄 Reset Pengaturan Awal"):
+    for k, v in DEFAULTS.items(): st.session_state[k] = v
+    st.rerun()
 
-def reset_to_defaults():
-    for key, val in DEFAULTS.items():
-        st.session_state[key] = val
-    st.success("🔄 Pengaturan berhasil dikembalikan ke standar awal pabrik!")
-
-# ==========================================
-# ⚙️ PANEL SETELAN PARAMETER (SIDEBAR CONTROLS)
-# ==========================================
+# --- 2. CONTROL PANEL (SIDEBAR - ANTI SENGGOL) ---
 st.sidebar.header("🕹️ PANEL KENDALI UTAMA")
+tf = st.sidebar.selectbox("Timeframe:", ["4 Jam (4h)", "1 Hari (Daily)", "1 Jam (1h)", "15 Menit (15m)"], index=["4 Jam (4h)", "1 Hari (Daily)", "1 Jam (1h)", "15 Menit (15m)"].index(st.session_state.tf))
+src_p = st.sidebar.selectbox("Source Data:", ["Close (Penutupan)", "Open (Pembukaan)", "High (Tertinggi)", "Low (Terendah)"], index=["Close (Penutupan)", "Open (Pembukaan)", "High (Tertinggi)", "Low (Terendah)"].index(st.session_state.src))
 
-col_action1, col_action2 = st.sidebar.columns(2)
-with col_action1:
-    btn_simpan = st.button("💾 Simpan Setelan", help="Mengunci parameter yang Anda ketik agar tidak hilang saat halaman di-refresh.")
-with col_action2:
-    st.button("🔄 Reset Standar", on_click=reset_to_defaults, help="Mengembalikan seluruh konfigurasi ke rumus presisi awal pabrik.")
+l_hma = st.sidebar.number_input("HMA Length:", 2, 50, int(st.session_state.l_hma), 1)
+l_ema = st.sidebar.number_input("EMA Length:", 5, 200, int(st.session_state.l_ema), 1)
+l_rsi = st.sidebar.number_input("RSI Length:", 5, 30, int(st.session_state.l_rsi), 1)
+l_vol = st.sidebar.number_input("Volume MA Length:", 5, 50, int(st.session_state.l_vol), 1)
+l_atr = st.sidebar.number_input("ATR Length:", 5, 30, int(st.session_state.l_atr), 1)
+m_atr = st.sidebar.number_input("Stop Loss ATR Mult:", 1.0, 4.5, float(st.session_state.m_atr), 0.1)
+m_chan = st.sidebar.number_input("Chandelier Trailing Mult:", 1.0, 4.0, float(st.session_state.m_chan), 0.1)
 
-st.sidebar.markdown("---")
-st.sidebar.subheader("📦 1. Parameter Utama Pasar")
-tf_options = ["4 Jam (4h)", "1 Hari (Daily)", "1 Jam (1h)", "15 Menit (15m)"]
-src_options = ["Close (Penutupan)", "Open (Pembukaan)", "High (Tertinggi)", "Low (Terendah)"]
+modal = st.sidebar.number_input("Initial Margin ($):", 10.0, 100000.0, float(st.session_state.modal), 100.0)
+lev = st.sidebar.number_input("Leverage:", 1, 50, int(st.session_state.lev), 1)
+risk = st.sidebar.number_input("Risk per Trade (%):", 0.5, 10.0, float(st.session_state.risk), 0.5)
+r_tp1 = st.sidebar.number_input("TP 1 Ratio:", 0.3, 2.0, float(st.session_state.r_tp1), 0.1)
+r_tp2 = st.sidebar.number_input("TP 2 Ratio:", 1.0, 5.0, float(st.session_state.r_tp2), 0.1)
+fee = st.sidebar.number_input("Trading Fee (%):", 0.0, 1.0, float(st.session_state.fee), 0.01)
 
-tf_pilihan = st.sidebar.selectbox("Jangka Waktu (Timeframe):", options=tf_options, index=tf_options.index(st.session_state.tf_pilihan))
-src_pilihan = st.sidebar.selectbox("Sumber Data (Source):", options=src_options, index=src_options.index(st.session_state.src_pilihan))
-jumlah_tampilan = st.sidebar.number_input("Jumlah Lilin di Layar:", min_value=10, max_value=300, value=int(st.session_state.jumlah_tampilan), step=10)
+# Simpan state agar awet saat refresh harian
+if st.sidebar.button("💾 Kunci & Simpan Setelan"):
+    st.session_state.update({"tf": tf, "src": src_p, "l_hma": l_hma, "l_ema": l_ema, "l_rsi": l_rsi, "l_vol": l_vol, "l_atr": l_atr, "m_atr": m_atr, "m_chan": m_chan, "modal": modal, "lev": lev, "risk": risk, "r_tp1": r_tp1, "r_tp2": r_tp2, "fee": fee})
+    st.success("Setelan berhasil dikunci!")
 
-st.sidebar.markdown("---")
-st.sidebar.subheader("📈 2. Konfigurasi Sinyal Sniper")
-length_hma = st.sidebar.number_input("Panjang HMA (Trend Utama):", min_value=2, max_value=50, value=int(st.session_state.length_hma), step=1)
-length_ema = st.sidebar.number_input("Periode EMA (Pullback Zone):", min_value=5, max_value=200, value=int(st.session_state.length_ema), step=1)
-length_rsi = st.sidebar.number_input("Periode RSI (Momentum):", min_value=5, max_value=30, value=int(st.session_state.length_rsi), step=1)
-length_vol_ma = st.sidebar.number_input("Periode Volume MA (Saringan):", min_value=5, max_value=50, value=int(st.session_state.length_vol_ma), step=1)
-
-st.sidebar.markdown("---")
-st.sidebar.subheader("🛡️ 3. Proteksi Volatilitas (ATR & Trailing)")
-length_atr = st.sidebar.number_input("Periode ATR:", min_value=5, max_value=30, value=int(st.session_state.length_atr), step=1)
-atr_multiplier = st.sidebar.number_input("Pengali ATR (Stop Loss Jauh):", min_value=1.0, max_value=4.5, value=float(st.session_state.atr_multiplier), step=0.1)
-chandelier_mult = st.sidebar.number_input("Chandelier Trailing Mult:", min_value=1.0, max_value=4.0, value=float(st.session_state.chandelier_mult), step=0.1)
-
-st.sidebar.markdown("---")
-st.sidebar.subheader("⏱️ 4. Saringan Jam Sesi Pasar")
-session_filter_active = st.sidebar.checkbox("Aktifkan Filter Jam Trading", value=st.session_state.session_filter_active)
-col_h1, col_h2 = st.sidebar.columns(2)
-with col_h1:
-    start_hour = st.number_input("Jam Mulai (WIB):", min_value=0, max_value=23, value=int(st.session_state.start_hour), step=1)
-with col_h2:
-    end_hour = st.number_input("Jam Selesai (WIB):", min_value=0, max_value=23, value=int(st.session_state.end_hour), step=1)
-
-st.sidebar.markdown("---")
-st.sidebar.subheader("🔥 5. Manajemen Risiko & Keuangan")
-modal_awal = st.sidebar.number_input("Margin Awal (\$ USD):", min_value=10.0, value=float(st.session_state.modal_awal), step=100.0)
-leverage = st.sidebar.number_input("Leverage (Multiplier):", min_value=1, max_value=50, value=int(st.session_state.leverage), step=1)
-risiko_per_trade_pct = st.sidebar.number_input("Risiko per Transaksi (%):", min_value=0.5, max_value=10.0, value=float(st.session_state.risiko_per_trade_pct), step=0.5)
-
-col_tp1, col_tp2 = st.sidebar.columns(2)
-with col_tp1:
-    tp1_ratio = st.number_input("Rasio TP 1:", min_value=0.3, max_value=2.0, value=float(st.session_state.tp1_ratio), step=0.1)
-with col_tp2:
-    tp2_ratio = st.number_input("Rasio TP 2:", min_value=1.0, max_value=5.0, value=float(st.session_state.tp2_ratio), step=0.1)
-
-trading_fee_pct = st.sidebar.number_input("Fee Bursa per Eksekusi (%):", min_value=0.0, max_value=1.0, value=float(st.session_state.trading_fee_pct), step=0.01)
-
-st.sidebar.markdown("---")
-st.sidebar.subheader("🤖 6. Integrasi Telegram")
-telegram_token = st.sidebar.text_input("Telegram Bot Token:", type="password", value=st.session_state.telegram_token)
-telegram_chat_id = st.sidebar.text_input("Telegram Chat ID:", value=st.session_state.telegram_chat_id)
-
-st.sidebar.markdown("---")
-st.sidebar.subheader("🟡 7. Koneksi API Binance Futures")
-binance_api_key = st.sidebar.text_input("Binance API Key:", type="password", value=st.session_state.binance_api_key)
-binance_secret_key = st.sidebar.text_input("Binance Secret Key:", type="password", value=st.session_state.binance_secret_key)
-live_trading_active = st.sidebar.checkbox("🚨 AKTIFKAN LIVE TRADING REAL", value=st.session_state.live_trading_active)
-
-if btn_simpan:
-    st.session_state.tf_pilihan = tf_pilihan
-    st.session_state.src_pilihan = src_pilihan
-    st.session_state.jumlah_tampilan = jumlah_tampilan
-    st.session_state.length_hma = length_hma
-    st.session_state.length_ema = length_ema
-    st.session_state.length_rsi = length_rsi
-    st.session_state.length_vol_ma = length_vol_ma
-    st.session_state.length_atr = length_atr
-    st.session_state.atr_multiplier = atr_multiplier
-    st.session_state.chandelier_mult = chandelier_mult
-    st.session_state.modal_awal = modal_awal
-    st.session_state.leverage = leverage
-    st.session_state.risiko_per_trade_pct = risiko_per_trade_pct
-    st.session_state.tp1_ratio = tp1_ratio
-    st.session_state.tp2_ratio = tp2_ratio
-    st.session_state.trading_fee_pct = trading_fee_pct
-    st.session_state.session_filter_active = session_filter_active
-    st.session_state.start_hour = start_hour
-    st.session_state.end_hour = end_hour
-    st.session_state.binance_api_key = binance_api_key
-    st.session_state.binance_secret_key = binance_secret_key
-    st.session_state.live_trading_active = live_trading_active
-    st.session_state.telegram_token = telegram_token
-    st.session_state.telegram_chat_id = telegram_chat_id
-    st.success("💾 Seluruh konfigurasi kustom Anda berhasil dikunci ke memori server!")
-
-# ==========================================
-# 📊 ENGINE ENGINE PENGOLAH DATA & TELEGRAM
-# ==========================================
-src_map = {"Close (Penutupan)": "close", "Open (Pembukaan)": "open", "High (Tertinggi)": "high", "Low (Terendah)": "low"}
-src_aktif = src_map[st.session_state.src_pilihan]
-
-interval_map = {"4 Jam (4h)": "4h", "1 Hari (Daily)": "1d", "1 Jam (1h)": "1h", "15 Menit (15m)": "15m"}
-period_map = {"4 Jam (4h)": "180d", "1 Hari (Daily)": "730d", "1 Jam (1h)": "90d", "15 Menit (15m)": "30d"}
-
-def send_telegram_alert(message):
-    if st.session_state.telegram_token and st.session_state.telegram_chat_id:
-        url = f"https://telegram.org{st.session_state.telegram_token}/sendMessage"
-        payload = {"chat_id": st.session_state.telegram_chat_id, "text": message, "parse_mode": "Markdown"}
-        try: requests.post(url, json=payload, timeout=5)
-        except: pass
-
-def execute_binance_futures_order(posisi, margin_usd, leverage_user, harga_entry):
-    if not st.session_state.binance_api_key or not st.session_state.binance_secret_key or not st.session_state.live_trading_active:
-        return "Mode Simulasi Aktif (Live order dilewati)."
-    try:
-        exchange = ccxt.binance({
-            'apiKey': st.session_state.binance_api_key,
-            'secret': st.session_state.binance_secret_key,
-            'options': {'defaultType': 'future'},
-            'enableRateLimit': True
-        })
-        symbol = 'BTC/USDT'
-        exchange.fapiPrivatePostLeverage({'symbol': 'BTCUSDT', 'leverage': int(leverage_user)})
-        quantity_btc = (float(margin_usd) * float(leverage_user)) / float(harga_entry)
-        quantity_btc = round(quantity_btc, 3)
-        if quantity_btc <= 0: return "⚠️ Ukuran Lot Terlalu Kecil."
-        
-        if posisi == "🟢 LONG (Buy)":
-            exchange.create_market_buy_order(symbol, quantity_btc)
-            return f"🚀 Live Binance Executed: BUY LONG {quantity_btc} BTC"
-        elif posisi == "🔴 SHORT (Sell)":
-            exchange.create_market_sell_order(symbol, quantity_btc)
-            return f"📉 Live Binance Executed: SELL SHORT {quantity_btc} BTC"
-    except Exception as e:
-        return f"❌ Binance API Error: {str(e)}"
-    return "Dilewati"
+# --- 3. DATA FETCHING & TA CALCULATION ---
+t_map = {"4 Jam (4h)": "4h", "1 Hari (Daily)": "1d", "1 Jam (1h)": "1h", "15 Menit (15m)": "15m"}
+p_map = {"4 Jam (4h)": "180d", "1 Hari (Daily)": "730d", "1 Jam (1h)": "90d", "15 Menit (15m)": "30d"}
+s_map = {"Close (Penutupan)": "close", "Open (Pembukaan)": "open", "High (Tertinggi)": "high", "Low (Terendah)": "low"}
 
 @st.cache_data(ttl=30)
-def get_crypto_data(p, i):
-    ticker = yf.Ticker("BTC-USD")
-    df = ticker.history(period=p, interval=i)
-    df = df.reset_index()
-    if 'Date' in df.columns: df = df.rename(columns={'Date': 'date'})
-    elif 'Datetime' in df.columns: df = df.rename(columns={'Datetime': 'date'})
-    df['date'] = pd.to_datetime(df['date']).dt.tz_convert(None)
-    df = df.rename(columns={'Open': 'open', 'High': 'high', 'Low': 'low', 'Close': 'close', 'Volume': 'volume'})
-    return df
+def load_data(p, i):
+    df = yf.Ticker("BTC-USD").history(period=p, interval=i).reset_index()
+    c_map = {'Date': 'date', 'Datetime': 'date', 'Open': 'open', 'High': 'high', 'Low': 'low', 'Close': 'close', 'Volume': 'volume'}
+    return df.rename(columns={k: v for k, v in c_map.items() if k in df.columns})
 
 try:
-    df = get_crypto_data(period_map[st.session_state.tf_pilihan], interval_map[st.session_state.tf_pilihan])
-    if df.empty:
-        st.error("Gagal memuat data dari Yahoo Finance.")
-        st.stop()
-
-    # Perhitungan Indikator Kuantitatif
-    df['hma'] = ta.hma(df[src_aktif], length=st.session_state.length_hma)
-    df['ema'] = ta.ema(df['close'], length=st.session_state.length_ema)
-    df['rsi'] = ta.rsi(df['close'], length=st.session_state.length_rsi)
-    df['atr'] = ta.atr(df['high'], df['low'], df['close'], length=st.session_state.length_atr)
-    df['vol_ma'] = ta.sma(df['volume'], length=st.session_state.length_vol_ma)
+    df = load_data(p_map[st.session_state.tf], t_map[st.session_state.tf])
+    df['date'] = pd.to_datetime(df['date']).dt.tz_convert(None)
     
-    df['highest_high'] = df['high'].rolling(window=22).max()
-    df['lowest_low'] = df['low'].rolling(window=22).min()
-    df['chandelier_long'] = df['highest_high'] - (df['atr'] * st.session_state.chandelier_mult)
-    df['chandelier_short'] = df['lowest_low'] + (df['atr'] * st.session_state.chandelier_mult)
-
-    df['is_green'] = df['hma'] >= df['hma'].shift(1)
-    df['is_red'] = df['hma'] < df['hma'].shift(1)
-
-    df['buy_signal'] = False
-    df['sell_signal'] = False
-    last_signal = 0
-
-    # Evaluasi Trigger Sinyal Kondisi Sesi Lilin Loop
-    for i in df.index:
-        if i < max(st.session_state.length_hma, st.session_state.length_ema, st.session_state.length_atr, st.session_state.length_vol_ma, st.session_state.length_rsi, 22): 
-            continue
-            
-        is_pullback_long = (df.at[i, 'low'] <= df.at[i, 'ema'] * 1.002) and (df.at[i, 'close'] > df.at[i, 'ema'])
-        is_pullback_short = (df.at[i, 'high'] >= df.at[i, 'ema'] * 0.998) and (df.at[i, 'close'] < df.at[i, 'ema'])
-        rsi_safe_long = df.at[i, 'rsi'] < 55
-        rsi_safe_short = df.at[i, 'rsi'] > 45
-        volume_valid = df.at[i, 'volume'] > df.at[i, 'vol_ma']
-
-        # Filter Tambahan Jam Trading Sesi Sesuai Keinginan User
-        time_valid = True
-        if st.session_state.session_filter_active:
-            candle_hour = df.at[i, 'date'].hour
-            if st.session_state.start_hour <= st.session_state.end_hour:
-                time_valid = st.session_state.start_hour <= candle_hour <= st.session_state.end_hour
-            else:
-                time_valid = (candle_hour >= st.session_state.start_hour) or (candle_hour <= st.session_state.end_hour)
-
-        if df.at[i, 'is_green'] and is_pullback_long and rsi_safe_long and volume_valid and time_valid and last_signal != 1:
-            df.at[i, 'buy_signal'] = True
-            last_signal = 1
-        elif df.at[i, 'is_red'] and is_pullback_short and rsi_safe_short and volume_valid and time_valid and last_signal != -1:
-            df.at[i, 'sell_signal'] = True
-            last_signal = -1
-
-    df['display_buy'] = df['buy_signal']
-    df['display_sell'] = df['sell_signal']
-
-    # --- INFORMASI KOTAK STATUS BANNER DI BAWAH JUDUL ---
-    last_row = df.iloc[-1]
-    if last_row['display_buy']:
-        st.success("### 🟢 SINYAL STRATEGI AKTIF: EXECUTE LONG (BUY) SEKARANG! 🚀")
-        res_live = execute_binance_futures_order("🟢 LONG (Buy)", st.session_state.modal_awal * 0.1, st.session_state.leverage, last_row['close'])
-        st.info(f"**Detail Sinyal:** Harga Entry: ${last_row['close']:,.2f} | Status API Bursa: {res_live}")
-    elif last_row['display_sell']:
-        st.error("### 🔴 SINYAL STRATEGI AKTIF: EXECUTE SHORT (SELL) SEKARANG! 📉")
-        res_live = execute_binance_futures_order("🔴 SHORT (Sell)", st.session_state.modal_awal * 0.1, st.session_state.leverage, last_row['close'])
-        st.info(f"**Detail Sinyal:** Harga Entry: ${last_row['close']:,.2f} | Status API Bursa: {res_live}")
-    else:
-        if last_row['is_green']: st.info("### ⚪ STATUS PASAR SAAT INI: HOLD LONG (Menunggu Koreksi Sesi) 📈")
-        else: st.warning("### ⚪ STATUS PASAR SAAT INI: HOLD SHORT (Menunggu Koreksi Sesi) 📉")
-
-    st.markdown("---")
-
-    # ==========================================
-    # ⚙️ LOGIKA BACKTEST + REINVEST COMPOUND
-    # ==========================================
-    trades_list = []  
-    active_trade = None
-    current_equity = st.session_state.modal_awal
+    # Kalkulasi Indikator Dasar
+    df['hma'] = ta.hma(df[s_map[st.session_state.src]], length=st.session_state.l_hma)
+    df['ema'] = ta.ema(df['close'], length=st.session_state.l_ema)
+    df['rsi'] = ta.rsi(df['close'], length=st.session_state.l_rsi)
+    df['atr'] = ta.atr(df['high'], df['low'], df['close'], length=st.session_state.l_atr)
+    df['vol_ma'] = ta.sma(df['volume'], length=st.session_state.l_vol)
     
-    equity_timestamps = [df.loc[df.index[0], 'date']]
-    equity_values = [st.session_state.modal_awal]
-
+    # Chandelier Trailing Stop Level
+    df['c_long'] = df['high'].rolling(22).max() - (df['atr'] * st.session_state.m_chan)
+    df['c_short'] = df['low'].rolling(22).min() + (df['atr'] * st.session_state.m_chan)
+    
+    df['is_g'] = df['hma'] >= df['hma'].shift(1)
+    df['buy_sig'] = False; df['sell_sig'] = False; last_sig = 0
+    
+    # Logika Scan Sinyal Sniper Institutional
     for i in df.index:
-        if active_trade is not None and active_trade['Status'] == "Berjalan (Running)":
-            if active_trade['Posisi'] == "🟢 LONG (Buy)":
-                current_sl = max(active_trade['Harga SL (\$)'], df.at[i, 'chandelier_long'])
-                if df.at[i, 'low'] <= current_sl:
-                    p_close = current_sl
-                    ratio_aktif = 1.0 if not active_trade['TP1_Hit'] else 0.5
-                    profit_raw = ((p_close - active_trade['Harga Entry (\$)']) / active_trade['Harga Entry (\$)']) * 100
-                    profit_net = (profit_raw * st.session_state.leverage) - (st.session_state.trading_fee_pct * 2)
-                    laba_usd = (profit_net / 100) * active_trade['Margin Kunci (\$)'] * ratio_aktif
-                    current_equity += laba_usd
-                    
-                    active_trade['Waktu Close'] = df.at[i, 'date'].strftime('%Y-%m-%d %H:%M')
-                    active_trade['Harga Close (\$)'] = round(p_close, 2)
-                    active_trade['Status'] = "💥 Terkena Stop Loss/Trailing" if not active_trade['TP1_Hit'] else "🎯 TP1 + 💥 SL Sisa"
-                    active_trade['Laba Bersih ($ USD)'] = round(active_trade.get('Laba_TP1_USD', 0) + laba_usd, 2)
-                    active_trade['Ekuitas Akhir (\$)'] = round(current_equity, 2)
-                    trades_list.append(active_trade)
-                    equity_timestamps.append(df.at[i, 'date'])
-                    equity_values.append(current_equity)
-                    active_trade = None
+        if i < max(st.session_state.l_hma, st.session_state.l_ema, st.session_state.l_atr, st.session_state.l_vol, 22): continue
+        p_long = (df.at[i, 'low'] <= df.at[i, 'ema'] * 1.002) and (df.at[i, 'close'] > df.at[i, 'ema'])
+        p_short = (df.at[i, 'high'] >= df.at[i, 'ema'] * 0.998) and (df.at[i, 'close'] < df.at[i, 'ema'])
+        
+        if df.at[i, 'is_g'] and p_long and (df.at[i, 'rsi'] < 55) and (df.at[i, 'volume'] > df.at[i, 'vol_ma']) and last_sig != 1:
+            df.at[i, 'buy_sig'] = True; last_sig = 1
+        elif not df.at[i, 'is_g'] and p_short and (df.at[i, 'rsi'] > 45) and (df.at[i, 'volume'] > df.at[i, 'vol_ma']) and last_sig != -1:
+            df.at[i, 'sell_sig'] = True; last_sig = -1
 
-                elif not active_trade['TP1_Hit'] and df.at[i, 'high'] >= active_trade['Harga TP1 (\$)']:
-                    p_close = active_trade['Harga TP1 (\$)']
-                    profit_raw = ((p_close - active_trade['Harga Entry (\$)']) / active_trade['Harga Entry (\$)']) * 100
-                    profit_net = (profit_raw * st.session_state.leverage) - (st.session_state.trading_fee_pct * 2)
-                    laba_tp1 = (profit_net / 100) * active_trade['Margin Kunci (\$)'] * 0.5
-                    current_equity += laba_tp1
-                    active_trade['TP1_Hit'] = True
-                    active_trade['Laba_TP1_USD'] = laba_tp1
-                    equity_timestamps.append(df.at[i, 'date'])
-                    equity_values.append(current_equity)
+    # --- 4. LIVE BANNER SIGNAL TEPAT DI BAWAH JUDUL ---
+    last = df.iloc[-1]
+    if last['buy_sig']: st.success(f"### 🟢 SINYAL AKTIF: LONG SEKARANG! | Entry: ${last['close']:,.2f}")
+    elif last['sell_sig']: st.error(f"### 🔴 SINYAL AKTIF: SHORT SEKARANG! | Entry: ${last['close']:,.2f}")
+    else: st.info("### ⚪ STATUS PASAR: WAIT / HOLDING (Menunggu Area Pantulan Valid)")
 
-                elif active_trade['TP1_Hit'] and df.at[i, 'high'] >= active_trade['Harga TP2 (\$)']:
-                    p_close = active_trade['Harga TP2 (\$)']
-                    profit_raw = ((p_close - active_trade['Harga Entry (\$)']) / active_trade['Harga Entry (\$)']) * 100
-                    profit_net = (profit_raw * st.session_state.leverage) - (st.session_state.trading_fee_pct * 2)
-                    laba_tp2 = (profit_net / 100) * active_trade['Margin Kunci (\$)'] * 0.5
-                    current_equity += laba_tp2
-                    
-                    active_trade['Waktu Close'] = df.at[i, 'date'].strftime('%Y-%m-%d %H:%M')
-                    active_trade['Harga Close (\$)'] = round(p_close, 2)
-                    active_trade['Status'] = "🎯 Target Tercapai Penuh (TP1+TP2)"
-                    active_trade['Laba Bersih ($ USD)'] = round(active_trade['Laba_TP1_USD'] + laba_tp2, 2)
-                    active_trade['Ekuitas Akhir (\$)'] = round(current_equity, 2)
-                    trades_list.append(active_trade)
-                    equity_timestamps.append(df.at[i, 'date'])
-                    equity_values.append(current_equity)
-                    active_trade = None
+    # --- 5. COMPOUNDING ENGINE BACKTEST ---
+    trades = []; active = None; eq_vals = [st.session_state.modal]; eq_times = [df.loc[0, 'date']]
+    c_eq = st.session_state.modal
+    
+    for i in df.index:
+        if active and active['Status'] == "Running":
+            if active['Posisi'] == "LONG":
+                c_sl = max(active['SL'], df.at[i, 'c_long'])
+                if df.at[i, 'low'] <= c_sl:
+                    p_net = (((c_sl - active['Entry']) / active['Entry']) * st.session_state.lev) - (st.session_state.fee * 2)
+                    c_eq += (p_net / 100) * active['Margin'] * (0.5 if active['TP1'] else 1.0)
+                    active.update({'Close': round(c_sl, 2), 'Status': "SL Hit", 'Laba': round(c_eq - active['PrevEq'], 2)})
+                    trades.append(active); eq_vals.append(c_eq); eq_times.append(df.at[i, 'date']); active = None
+                elif not active['TP1'] and df.at[i, 'high'] >= active['TP1_p']:
+                    c_eq += ((((active['TP1_p'] - active['Entry']) / active['Entry']) * st.session_state.lev) - (st.session_state.fee * 2)) / 100 * active['Margin'] * 0.5
+                    active['TP1'] = True; eq_vals.append(c_eq); eq_times.append(df.at[i, 'date'])
+                elif active['TP1'] and df.at[i, 'high'] >= active['TP2_p']:
+                    p_net = (((active['TP2_p'] - active['Entry']) / active['Entry']) * st.session_state.lev) - (st.session_state.fee * 2)
+                    c_eq += (p_net / 100) * active['Margin'] * 0.5
+                    active.update({'Close': round(active['TP2_p'], 2), 'Status': "TP1+TP2 Hit", 'Laba': round(c_eq - active['PrevEq'], 2)})
+                    trades.append(active); eq_vals.append(c_eq); eq_times.append(df.at[i, 'date']); active = None
+            elif active['Posisi'] == "SHORT":
+                c_sl = min(active['SL'], df.at[i, 'c_short'])
+                if df.at[i, 'high'] >= c_sl:
+                    p_net = (((active['Entry'] - c_sl) / active['Entry']) * st.session_state.lev) - (st.session_state.fee * 2)
+                    c_eq += (p_net / 100) * active['Margin'] * (0.5 if active['TP1'] else 1.0)
+                    active.update({'Close': round(c_sl, 2), 'Status': "SL Hit", 'Laba': round(c_eq - active['PrevEq'], 2)})
+                    trades.append(active); eq_vals.append(c_eq); eq_times.append(df.at[i, 'date']); active = None
+                elif not active['TP1'] and df.at[i, 'low'] <= active['TP1_p']:
+                    c_eq += ((((active['Entry'] - active['TP1_p']) / active['Entry']) * st.session_state.lev) - (st.session_state.fee * 2)) / 100 * active['Margin'] * 0.5
+                    active['TP1'] = True; eq_vals.append(c_eq); eq_times.append(df.at[i, 'date'])
+                elif active['TP1'] and df.at[i, 'low'] <= active['TP2_p']:
+                    p_net = (((active['Entry'] - active['TP2_p']) / active['Entry']) * st.session_state.lev) - (st.session_state.fee * 2)
+                    c_eq += (p_net / 100) * active['Margin'] * 0.5
+                    active.update({'Close': round(active['TP2_p'], 2), 'Status': "TP1+TP2 Hit", 'Laba': round(c_eq - active['PrevEq'], 2)})
+                    trades.append(active); eq_vals.append(c_eq); eq_times.append(df.at[i, 'date']); active = None
 
-            elif active_trade is not None and active_trade['Posisi'] == "🔴 SHORT (Sell)":
-                current_sl = min(active_trade['Harga SL (\$)'], df.at[i, 'chandelier_short'])
-                if df.at[i, 'high'] >= current_sl:
-                    p_close = current_sl
-                    ratio_aktif = 1.0 if not active_trade['TP1_Hit'] else 0.5
-                    profit_raw = ((active_trade['Harga Entry (\$)'] - p_close) / active_trade['Harga Entry (\$)']) * 100
-                    profit_net = (profit_raw * st.session_state.leverage) - (st.session_state.trading_fee_pct * 2)
-                    laba_usd = (profit_net / 100) * active_trade['Margin Kunci (\$)'] * ratio_aktif
-                    current_equity += laba_usd
-                    
-                    active_trade['Waktu Close'] = df.at[i, 'date'].strftime('%Y-%m-%d %H:%M')
-                    active_trade['Harga Close (\$)'] = round(p_close, 2)
-                    active_trade['Status'] = "💥 Terkena Stop Loss/Trailing" if not active_trade['TP1_Hit'] else "🎯 TP1 + 💥 SL Sisa"
-                    active_trade['Laba Bersih ($ USD)'] = round(active_trade.get('Laba_TP1_USD', 0) + laba_usd, 2)
-                    active_trade['Ekuitas Akhir (\$)'] = round(current_equity, 2)
-                    trades_list.append(active_trade)
-                    equity_timestamps.append(df.at[i, 'date'])
-                    equity_values.append(current_equity)
-                    active_trade = None
+        if df.at[i, 'buy_sig']:
+            sl = df.at[i, 'close'] - (df.at[i, 'atr'] * st.session_state.m_atr)
+            j_sl = abs(df.at[i, 'close'] - sl); size = min(((c_eq * (st.session_state.risk / 100)) / ((j_sl / df.at[i, 'close']) * st.session_state.lev)), c_eq * 0.95)
+            active = {'Posisi': "LONG", 'Entry': df.at[i, 'close'], 'SL': sl, 'TP1_p': df.at[i, 'close'] + (j_sl * st.session_state.r_tp1), 'TP2_p': df.at[i, 'close'] + (j_sl * st.session_state.r_tp2), 'Margin': size, 'Status': "Running", 'TP1': False, 'PrevEq': c_eq}
+        elif df.at[i, 'sell_sig']:
+            sl = df.at[i, 'close'] + (df.at[i, 'atr'] * st.session_state.m_atr)
+            j_sl = abs(sl - df.at[i, 'close']); size = min(((c_eq * (st.session_state.risk / 100)) / ((j_sl / df.at[i, 'close']) * st.session_state.lev)), c_eq * 0.95)
+            active = {'Posisi': "SHORT", 'Entry': df.at[i, 'close'], 'SL': sl, 'TP1_p': df.at[i, 'close'] - (j_sl * st.session_state.r_tp1), 'TP2_p': df.at[i, 'close'] - (j_sl * st.session_state.r_tp2), 'Margin': size, 'Status': "Running", 'TP1': False, 'PrevEq': c_eq}
 
-                elif not active_trade['TP1_Hit'] and df.at[i, 'low'] <= active_trade['Harga TP1 (\$)']:
-                    p_close = active_trade['Harga TP1 (\$)']
-                    profit_raw = ((active_trade['Harga Entry (\$)'] - p_close) / active_trade['Harga Entry (\$)']) * 100
-                    profit_net = (profit_raw * st.session_state.leverage) - (st.session_state.trading_fee_pct * 2)
-                    laba_tp1 = (profit_net / 100) * active_trade['Margin Kunci (\$)'] * 0.5
-                    current_equity += laba_tp1
-                    active_trade['TP1_Hit'] = True
-                    active_trade['Laba_TP1_USD'] = laba_tp1
-                    equity_timestamps.append(df.at[i, 'date'])
-                    equity_values.append(current_equity)
+    # --- 6. METRICS & RENDERING GRAPH ---
+    d_trades = [t for t in trades if t['Status'] != "Running"]
+    wr = 0.0; pf = 0.0; mdd = 0.0
+    if d_trades:
+        w_t = [t for t in d_trades if t['Laba'] > 0]; l_t = [t for t in d_trades if t['Laba'] < 0]
+        wr = (len(w_t) / len(d_trades)) * 100
+        g_prof = sum([t['Laba'] for t in w_t]); g_loss = abs(sum([t['Laba'] for t in l_t]))
+        pf = g_prof / g_loss if g_loss > 0 else g_prof
+        eq_s = pd.Series(eq_vals); mdd = abs(((eq_s - eq_s.cummax()) / eq_s.cummax()).min()) * 100
 
-                elif active_trade['TP1_Hit'] and df.at[i, 'low'] <= active_trade['Harga TP2 (\$)']:
-                    p_close = active_trade['Harga TP2 (\$)']
-                    profit_raw = ((active_trade['Harga Entry (\$)'] - p_close) / active_trade['Harga Entry (\$)']) * 100
-                    profit_net = (profit_raw * st.session_state.leverage) - (st.session_state.trading_fee_pct * 2)
-                    laba_tp2 = (profit_net / 100) * active_trade['Margin Kunci (\$)'] * 0.5
-                    current_equity += laba_tp2
-                    
-                    active_trade['Waktu Close'] = df.at[i, 'date'].strftime('%Y-%m-%d %H:%M')
-                    active_trade['Harga Close (\$)'] = round(p_close, 2)
-                    active_trade['Status'] = "🎯 Target Tercapai Penuh (TP1+TP2)"
-                    active_trade['Laba Bersih ($ USD)'] = round(active_trade['Laba_TP1_USD'] + laba_tp2, 2)
-                    active_trade['Ekuitas Akhir (\$)'] = round(current_equity, 2)
-                    trades_list.append(active_trade)
-                    equity_timestamps.append(df.at[i, 'date'])
-                    equity_values.append(current_equity)
-                    active_trade = None
+    st.markdown("### 📊 Ringkasan Kinerja Komparatif")
+    r1, r2, r3, r4, r5 = st.columns(5)
+    r1.metric("Win Rate", f"{wr:.2f}%")
+    r2.metric("Profit Factor", f"{pf:.2f}" if pf > 0 else "N/A")
+    r3.metric("Max Drawdown (MDD)", f"{mdd:.2f}%")
+    r4.metric("Compound ROI", f"{((c_eq - st.session_state.modal)/st.session_state.modal)*100:.2f}%")
+    r5.metric("Saldo Akhir", f"${c_eq:,.2f}")
 
-        # Pembukaan Posisi Baru Memicu Perhitungan Reinvestment Compound Modal Berjalan
-        if df.at[i, 'display_buy']:
-            if active_trade is not None:
-                ratio_aktif = 1.0 if not active_trade['TP1_Hit'] else 0.5
-                p_close = df.at[i, 'close']
-                profit_raw = ((p_close - active_trade['Harga Entry (\$)']) if active_trade['Posisi'] == "🟢 LONG (Buy)" else (active_trade['Harga Entry (\$)'] - p_close)) / active_trade['Harga Entry (\$)'] * 100
-                profit_net = (profit_raw * st.session_state.leverage) - (st.session_state.trading_fee_pct * 2)
-                laba_usd = (profit_net / 100) * active_trade['Margin Kunci (\$)'] * ratio_aktif
-                current_equity += laba_usd
-                active_trade['Status'] = "🎯 Ditutup Sinyal Kebalikan"
-                active_trade['Laba Bersih (\$ USD)'] = round(active_trade.get('Laba_TP1_USD', 0) + laba_usd, 2)
-                trades_list.append(active_trade)
-                equity_timestamps.append(df.at[i, 'date'])
-                equity_values.append(current_equity)
-                active_trade = None
+    # Render Subplot Candlestick & Indikator
+    df_p = df.tail(150)
+    fig = make_subplots(rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.04, row_width=[0.2, 0.2, 0.6])
+    fig.add_trace(go.Candlestick(x=df_p['date'], open=df_p['open'], high=df_p['high'], low=df_p['low'], close=df_p['close'], name="Lilin"), row=1, col=1)
+    fig.add_trace(go.Scatter(x=df_p['date'], y=df_p['hma'], line=dict(color='yellow', width=2), name="HMA"), row=1, col=1)
+    fig.add_trace(go.Scatter(x=df_p['date'], y=df_p['ema'], line=dict(color='cyan', width=1, dash='dash'), name="EMA"), row=1, col=1)
+    fig.add_trace(go.Bar(x=df_p['date'], y=df_p['volume'], marker_color='orange', name="Volume"), row=2, col=1)
+    fig.add_trace(go.Scatter(x=df_p['date'], y=df_p['rsi'], line=dict(color='green', width=1.5), name="RSI"), row=3, col=1)
+    fig.update_layout(height=650, xaxis_rangeslider_visible=False, template="plotly_dark")
+    st.plotly_chart(fig, use_container_width=True)
 
-            sl_price = df.at[i, 'close'] - (df.at[i, 'atr'] * st.session_state.atr_multiplier)
-            jarak_sl = abs(df.at[i, 'close'] - sl_price)
-            tp1_price = df.at[i, 'close'] + (jarak_sl * st.session_state.tp1_ratio)
-            tp2_price = df.at[i, 'close'] + (jarak_sl * st.session_state.tp2_ratio)
-            
-            jarak_sl_pct = jarak_sl / df.at[i, 'close']
-            usd_risk = current_equity * (st.session_state.risiko_per_trade_pct / 100)
-            margin_final = min((usd_risk / (jarak_sl_pct * st.session_state.leverage)), current_equity * 0.95)
-
-            active_trade = {
-                'Posisi': "🟢 LONG (Buy)", 'Waktu Open': df.at[i, 'date'].strftime('%Y-%m-%d %H:%M'),
-                'Harga Entry (\$)': round(df.at[i, 'close'], 2), 'Harga SL (\$)': round(sl_price, 2),
-                'Harga TP1 (\$)': round(tp1_price, 2), 'Harga TP2 (\$)': round(tp2_price, 2),
-                'Margin Kunci (\$)': round(margin_final, 2), 'Status': "Berjalan (Running)", 'TP1_Hit': False, 'Laba_TP1_USD': 0
-            }
-            if i == df.index[-1]:
-                send_telegram_alert(f"🟢 *SNIPER LONG BTC-USD*\nEntry: \({df.at[i, 'close']:.2f}\nSL:\){sl_price:.2f}")
-
-        elif df.at[i, 'display_sell']:
-            if active_trade is not None:
-                ratio_aktif = 1.0 if not active_trade['TP1_Hit'] else 0.5
-                p_close = df.at[i, 'close']
-                profit_raw = ((p_close - active_trade['Harga Entry (\$)']) if active_trade['Posisi'] == "🟢 LONG (Buy)" else (active_trade['Harga Entry (\$)'] - p_close)) / active_trade['Harga Entry (\$)'] * 100
-                profit_net = (profit_raw * st.session_state.leverage) - (st.session_state.trading_fee_pct * 2)
-                laba_usd = (profit_net / 100) * active_trade['Margin Kunci (\$)'] * ratio_aktif
-                current_equity += laba_usd
-                active_trade['Status'] = "🎯 Ditutup Sinyal Kebalikan"
-                active_trade['Laba Bersih (\$ USD)'] = round(active_trade.get('Laba
+except Exception as err:
+    st.error(f"Sistem gagal merender data: {err}")
