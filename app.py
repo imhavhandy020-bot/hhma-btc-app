@@ -51,7 +51,9 @@ def get_crypto_data(p, i):
     df = ticker.history(period=p, interval=i)
     df = df.reset_index()
     df = df.rename(columns={'Date': 'date', 'Datetime': 'date', 'Open': 'open', 'High': 'high', 'Low': 'low', 'Close': 'close', 'Volume': 'volume'})
-    return df'date', 'open', 'high', 'low', 'close', 'volume'
+    features = ['date', 'open', 'high', 'low', 'close', 'volume']
+return df[features]
+
 
 def putar_alarm(jenis_sinyal):
     if jenis_sinyal == "BUY":
