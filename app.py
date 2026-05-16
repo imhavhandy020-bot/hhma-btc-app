@@ -109,7 +109,6 @@ def calculate_hma_20(df):
 # INTERFACES: AMBIL HARGA LIVE TICKER (UNTUK HITUNG PROFIT RUNNING)
 # =====================================================================
 def get_live_market_price(pair):
-    """Mengambil harga pasar detik ini langsung dari ticker publik Indodax"""
     clean_pair = pair.lower().replace("/", "_")
     url = f"https://indodax.com{clean_pair}"
     try:
@@ -173,7 +172,6 @@ def run_autonomous_engine():
         row = cursor.fetchone()
         last_signal, holding_amount = row if row else ("NONE", 0.0)
         
-        # 🟢 SINYAL BUY RIIL (HMA Hijau)
         if current_color == 'Green' and last_signal != 'BUY':
             res = execute_indodax_trade(pair, "buy", MODAL_PER_TRANSAKSI_IDR)
             if res.get("success") == 1:
@@ -186,7 +184,6 @@ def run_autonomous_engine():
                 cursor.execute("INSERT INTO history (pair, type, price, status, timestamp) VALUES (?, 'BUY', ?, 'SUCCESS', ?)", (pair, current_price, now_str))
                 db_conn.commit()
                 
-        # 🔴 SINYAL SELL RIIL (HMA Merah)
         elif current_color == 'Red' and last_signal == 'BUY':
             coin_to_sell = holding_amount if holding_amount > 0 else (MODAL_PER_TRANSAKSI_IDR / current_price)
             res = execute_indodax_trade(pair, "sell", coin_to_sell)
@@ -204,11 +201,13 @@ def run_autonomous_engine():
 cursor = db_conn.cursor()
 cursor.execute("SELECT COUNT(*) FROM history WHERE type='SELL' AND status='SUCCESS'")
 total_win_row = cursor.fetchone()
-total_win = total_win_row if total_win_row else 0
+# AMBIL INDEKS 0 AGAR BERUPA ANGKA, BUKAN TUPLE
+total_win = total_win_row[0] if total_win_row else 0
 
 cursor.execute("SELECT COUNT(*) FROM history WHERE status='SUCCESS'")
 total_trades_row = cursor.fetchone()
-total_trades = total_trades_row if total_trades_row else 0
+# AMBIL INDEKS 0 AGAR BERUPA ANGKA, BUKAN TUPLE
+total_trades = total_trades_row[0] if total_trades_row else 0
 
 if total_trades > 1 and total_win > 0:
     win_rate = (total_win / (total_trades / 2)) * 100
@@ -217,24 +216,23 @@ else:
 
 cursor.execute("SELECT last_run FROM settings LIMIT 1")
 last_run_time = cursor.fetchone()
-last_run_display = last_run_time if last_run_time and last_run_time else "Belum Berjalan"
+last_run_display = last_run_time[0] if last_run_time and last_run_time[0] else "Belum Berjalan"
 
 st.markdown("### 🛡️ Indodax Multi-Pair Pro Server")
 col1, col2 = st.columns(2)
 col1.metric("Win Rate Bot", f"{win_rate:.1f}%")
 
 if last_run_display and " " in last_run_display:
-    waktu_saja = last_run_display.split(" ")
+    waktu_saja = last_run_display.split(" ")[1]  # Mengambil String Jam
     col2.metric("Server Terakhir Scan", str(waktu_saja))
 else:
     col2.metric("Server Terakhir Scan", str(last_run_display))
 
 # =====================================================================
-# MODUL LIVE PROFIT: MODIFIKASI TABEL RUNNING TRADES
+# MODUL LIVE PROFIT: TABEL RUNNING TRADES (AMAN TOTAL)
 # =====================================================================
 st.markdown("#### 📋 Running Trades (Status Posisi)")
 try:
-    # Ambil data posisi beli aktif dari SQLite
     df_raw = pd.read_sql_query("""
         SELECT pair, entry_price, holding_amount, timestamp 
         FROM trades WHERE last_signal='BUY'
@@ -250,18 +248,15 @@ try:
             holding_amount = float(row['holding_amount'])
             waktu = row['timestamp']
             
-            # Ambil harga market terkini untuk hitung live profit
             live_price = get_live_market_price(pair)
             if live_price is None:
-                live_price = entry_price # Fallback jika API delay
+                live_price = entry_price
                 
-            # Rumus Hitung Persentase & Nominal Profit Rupiah
             profit_pct = ((live_price - entry_price) / entry_price) * 100
             current_value_idr = holding_amount * live_price
             initial_value_idr = holding_amount * entry_price
             profit_idr = current_value_idr - initial_value_idr
             
-            # Berikan tanda plus (+) jika profit positif
             sign = "+" if profit_idr >= 0 else ""
             
             live_data.append({
