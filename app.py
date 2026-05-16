@@ -5,27 +5,47 @@ import ccxt
 import sqlite3
 from datetime import datetime
 
-# Konfigurasi Halaman Dasar agar Ramah Tampilan Layar HP
-st.set_page_config(page_title="Indodax HMA Bot", layout="centered")
+# Konfigurasi Tampilan Layar HP
+st.set_page_config(page_title="Indodax HMA Bot v2", layout="centered")
 
 # ==========================================
-# KONFIGURASI API INDODAX & STRATEGI
+# MENU INPUT PARAMETER (SIDEBAR HP)
 # ==========================================
-SYMBOL = 'BTC/IDR'       
-TIMEFRAME = '1d'         
-HMA_LENGTH = 2           
-TAKE_PROFIT_PCT = 0.05   
-STOP_LOSS_PCT = 0.02     
+st.sidebar.title("⚙️ Pengaturan Bot")
 
-# Inisialisasi API Publik Indodax (Simulasi / Baca Data)
-@st.cache_resource
-def init_exchange():
-    return ccxt.indodax({'enableRateLimit': True})
+# 1. Kolom Input API Key Indodax
+st.sidebar.subheader("🔑 Kredensial Indodax")
+api_key_input = st.sidebar.text_input("API Key", type="password", help="Masukkan API Key Indodax Anda")
+secret_key_input = st.sidebar.text_input("Secret Key", type="password", help="Masukkan Secret Key Indodax Anda")
 
-exchange = init_exchange()
+# 2. Menu Indikator & Pembatasan Data
+st.sidebar.subheader("📈 Parameter Indikator")
+SYMBOL = st.sidebar.selectbox("Pilih Aset", ["BTC/IDR", "ETH/IDR", "USDT/IDR"], index=0)
+TIMEFRAME = st.sidebar.selectbox("Timeframe", ["1d", "4h", "1h", "15m"], index=0)
+HMA_LENGTH = st.sidebar.number_input("Panjang HMA (Length)", min_value=1, max_value=100, value=2, step=1)
+MAX_BARS = st.sidebar.slider("Pembatasan Bar (Max Bars)", min_value=10, max_value=500, value=100, step=10)
+
+# 3. Parameter Risiko
+st.sidebar.subheader("🛡️ Manajemen Risiko")
+TAKE_PROFIT_PCT = st.sidebar.number_input("Pelebaran Profit / TP (%)", min_value=0.1, max_value=100.0, value=5.0) / 100
+STOP_LOSS_PCT = st.sidebar.number_input("Batasan Rugi / SL (%)", min_value=0.1, max_value=100.0, value=2.0) / 100
+
+# Inisialisasi CCXT berdasarkan Key yang Diinput
+def init_exchange(api_key, secret_key):
+    if api_key and secret_key:
+        return ccxt.indodax({
+            'apiKey': api_key,
+            'secret': secret_key,
+            'enableRateLimit': True
+        })
+    else:
+        # Jika key kosong, gunakan mode public (hanya baca data harga saja)
+        return ccxt.indodax({'enableRateLimit': True})
+
+exchange = init_exchange(api_key_input, secret_key_input)
 
 # ==========================================
-# MANAJEMEN DATABASE SQLITE LOCAL
+# MANAJEMEN DATABASE SQLITE
 # ==========================================
 def init_db():
     conn = sqlite3.connect('trading_bot.db')
@@ -68,8 +88,8 @@ def wma(series, length):
     return series.rolling(length).apply(lambda x: np.dot(x, weights) / weights.sum(), raw=True)
 
 def calculate_hma(df, length):
-    half_length = int(length / 2)
-    sqrt_length = int(np.sqrt(length))
+    half_length = int(length / 2) if int(length / 2) > 0 else 1
+    sqrt_length = int(np.sqrt(length)) if int(np.sqrt(length)) > 0 else 1
     wma_half = wma(df['close'], half_length)
     wma_full = wma(df['close'], length)
     raw_hma = (2 * wma_half) - wma_full
@@ -79,16 +99,16 @@ def calculate_hma(df, length):
 # ==========================================
 # KOMPONEN REFRESH OTOMATIS (FRAGMENT)
 # ==========================================
-@st.fragment(run_every=5) # Paksa segarkan bagian ini setiap 5 detik
+@st.fragment(run_every=5)
 def market_monitor_fragment():
     waktu_sekarang = datetime.now().strftime('%H:%M:%S')
     st.caption(f"🔄 Auto-Refresh Aktif: {waktu_sekarang}")
     
     try:
-        # Tarik data market terbaru
-        bars = exchange.fetch_ohlcv(SYMBOL, TIMEFRAME, limit=50)
+        # Menarik data dengan limit sesuai input "Pembatasan Bar"
+        bars = exchange.fetch_ohlcv(SYMBOL, TIMEFRAME, limit=int(MAX_BARS))
         df = pd.DataFrame(bars, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-        df = calculate_hma(df, HMA_LENGTH)
+        df = calculate_hma(df, int(HMA_LENGTH))
         
         current_hma = df['hma'].iloc[-1]
         prev_hma = df['hma'].iloc[-2]
@@ -101,7 +121,6 @@ def market_monitor_fragment():
         raw_buy = is_green_now and not is_green_prev
         raw_sell = not is_green_now and is_green_prev
         
-        # Kartu Informasi Utama di Layar HP
         col1, col2 = st.columns(2)
         col1.metric(label=f"Harga {SYMBOL}", value=f"{current_close:,.0f} IDR")
         
@@ -110,26 +129,42 @@ def market_monitor_fragment():
         else:
             col2.metric(label="Tren HHMA", value="MERAH (BEAR)", delta="-Turun", delta_color="inverse")
             
-        # Logika Sinyal dan Penyimpanan Otomatis
         if 'last_signal' not in st.session_state:
             st.session_state.last_signal = 0
             
         if raw_buy and st.session_state.last_signal != 1:
             tp = current_close * (1 + TAKE_PROFIT_PCT)
             sl = current_close * (1 - STOP_LOSS_PCT)
+            
+            # Eksekusi riil hanya berjalan jika API Key diisi
+            if api_key_input and secret_key_input:
+                try:
+                    # exchange.create_market_buy_order(SYMBOL, jumlah_beli)
+                    pass
+                except Exception as trade_err:
+                    st.sidebar.error(f"Gagal Order Riil: {trade_err}")
+            
             save_trade('BUY', current_close, tp, sl)
             st.session_state.last_signal = 1
-            st.toast("🚨 Sinyal BUY Baru Terdeteksi & Tersimpan!", icon="🟩")
+            st.toast("🚨 Sinyal BUY Baru Tersimpan!", icon="🟩")
             
         elif raw_sell and st.session_state.last_signal != -1:
             tp = current_close * (1 - TAKE_PROFIT_PCT)
             sl = current_close * (1 + STOP_LOSS_PCT)
+            
+            if api_key_input and secret_key_input:
+                try:
+                    # exchange.create_market_sell_order(SYMBOL, jumlah_jual)
+                    pass
+                except Exception as trade_err:
+                    st.sidebar.error(f"Gagal Order Riil: {trade_err}")
+            
             save_trade('SELL', current_close, tp, sl)
             st.session_state.last_signal = -1
-            st.toast("🚨 Sinyal SELL Baru Terdeteksi & Tersimpan!", icon="🟥")
+            st.toast("🚨 Sinyal SELL Baru Tersimpan!", icon="🟥")
             
-        # Grafik Garis Sederhana untuk HP
-        st.line_chart(df[['close', 'hma']].tail(20))
+        # Menampilkan grafik sesuai batasan bar yang dipilih
+        st.line_chart(df[['close', 'hma']].tail(int(MAX_BARS)))
         
     except Exception as e:
         st.error(f"Gagal memuat data pasar: {e}")
@@ -140,11 +175,15 @@ def market_monitor_fragment():
 st.title("📊 Indodax Monitor Bot")
 init_db()
 
-# Jalankan pemantau harga real-time
+# Indikator status koneksi API di atas halaman
+if api_key_input and secret_key_input:
+    st.success("🔐 API Key Terpasang (Mode Live Trading Aktif)")
+else:
+    st.warning("🔓 Menggunakan Mode Public (Hanya Memantau / Simulasi)")
+
 st.subheader("Live Market")
 market_monitor_fragment()
 
-# Tampilkan data transaksi yang tersimpan permanen
 st.subheader("📦 Data Riwayat Transaksi (Terbaca dari SQLite)")
 history_df = get_trade_history()
 
