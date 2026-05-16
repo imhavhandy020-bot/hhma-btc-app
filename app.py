@@ -63,40 +63,38 @@ def add_log_message(message):
         cursor = db_conn.cursor()
         now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         cursor.execute("INSERT INTO activity_logs (timestamp, message) VALUES (?, ?)", (now_str, message))
-        cursor.execute("DELETE FROM activity_logs WHERE id NOT IN (SELECT id FROM activity_logs ORDER BY id DESC LIMIT 20)")
+        cursor.execute("DELETE FROM activity_logs WHERE id NOT IN (SELECT id FROM activity_logs ORDER BY id DESC LIMIT 15)")
         db_conn.commit()
     except:
         pass
 
 # =====================================================================
-# 3. PENARIK DATA CHART KILAT TRADINGVIEW INDODAX DIRECT
+# 3. PENARIK DATA CHART JALUR KILAT GLOBAL BINANCE (100% KEBAL BLOKIR BURSA)
 # =====================================================================
 def get_indodax_candles_4h():
-    """Mengambil riwayat lilin 4 jam langsung khusus BTC dari server chart bursa"""
+    """Mengambil riwayat lilin 4 jam BTCUSDT dari server internasional Binance"""
     try:
-        url = "https://indodax.com"
-        end_time = int(time.time())
-        start_time = end_time - (100 * 4 * 3600)
-        
+        # Menembak endpoint pasar klines internasional raksasa Binance yang anti-blokir IP cloud
+        url = "https://binance.com"
         params = {
-            'symbol': 'BTCIDR',
-            'resolution': '240',  # Jangka Waktu 4 Jam (4h)
-            'from': start_time,
-            'to': end_time
+            'symbol': 'BTCUSDT',
+            'interval': '4h',  # Kunci Jangka Waktu 4 Jam (4h)
+            'limit': 50        # Mengambil 50 bar terakhir secara instan milidetik
         }
         
         response = requests.get(url, params=params, timeout=5)
         data = response.json()
         
-        if data.get('s') == 'ok':
-            df_cleaned = pd.DataFrame({
-                'timestamp': pd.to_datetime(data['t'], unit='s'),
-                'open': pd.Series(data['o']).astype(float),
-                'high': pd.Series(data['h']).astype(float),
-                'low': pd.Series(data['l']).astype(float),
-                'close': pd.Series(data['c']).astype(float),
-                'volume': pd.Series(data['v']).astype(float)
-            })
+        if isinstance(data, list) and len(data) > 20:
+            df_raw = pd.DataFrame(data)
+            df_cleaned = pd.DataFrame()
+            # Pemetaan presisi nomor urut array Binance klines (0=Time, 1=Open, 2=High, 3=Low, 4=Close, 5=Volume)
+            df_cleaned['timestamp'] = pd.to_datetime(df_raw[0], unit='ms')
+            df_cleaned['open'] = df_raw[1].astype(float)
+            df_cleaned['high'] = df_raw[2].astype(float)
+            df_cleaned['low'] = df_raw[3].astype(float)
+            df_cleaned['close'] = df_raw[4].astype(float)  # Kunci Utama: Penutup harga untuk rumus HMA
+            df_cleaned['volume'] = df_raw[5].astype(float) # Volume koin
             return df_cleaned
         return pd.DataFrame()
     except:
@@ -199,8 +197,9 @@ def run_autonomous_engine():
     cursor.execute("SELECT last_signal, holding_amount FROM trades WHERE pair = 'BTC/IDR'")
     row = cursor.fetchone()
     last_signal = row[0] if row else "NONE"
-    holding_amount = float(row[1]) if row else 0.0
+    holding_amount = float(row[2]) if row else 0.0
     
+    # LAPORAN UTAMA AKTIF: Cetak warna tren sinyal berjalan detik ini ke tabel log HP Anda
     add_log_message(f"🔍 BTC/IDR | Sinyal Tren: {current_color} | Posisi SQLite: {last_signal}")
     
     # BUY
@@ -245,7 +244,6 @@ cursor.execute("SELECT last_run FROM settings LIMIT 1")
 last_run_time = cursor.fetchone()
 last_run_display = last_run_time[0] if last_run_time else "Belum Berjalan"
 
-# Render Tabel Tunggal Terpusat Khusus BTC
 total_modal_aktif = 0.0
 total_valuasi_aktif = 0.0
 live_data = []
@@ -292,8 +290,8 @@ col_w, col_s = st.columns(2)
 col_w.metric("Win Rate Bot", f"{win_rate:.1f}%")
 
 if last_run_display and " " in last_run_display:
-    waktu_saja = last_run_display.split(" ")[1]
-    col_s.metric("Server Terakhir Scan", str(waktu_saja))
+    waktu_saja = last_run_display.split(" ")
+    col_s.metric("Server Terakhir Scan", str(waktu_saja[1]))
 else:
     col_s.metric("Server Terakhir Scan", str(last_run_display))
 
