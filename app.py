@@ -74,10 +74,7 @@ def add_log_message(message):
 def get_indodax_candles_4h(pair):
     """Mengambil riwayat lilin 4 jam langsung dari server global Kucoin Market IDR"""
     try:
-        # Mengubah BTC/IDR menjadi BTC-IDR sesuai ketentuan format url bursa Kucoin
         kucoin_symbol = pair.upper().replace("/", "-")
-        
-        # Endpoint pasar internasional Kucoin sangat longgar dan ramah server cloud gratisan
         url = "https://kucoin.com"
         
         end_time = int(time.time())
@@ -85,7 +82,7 @@ def get_indodax_candles_4h(pair):
         
         params = {
             'symbol': kucoin_symbol,
-            'type': '4hour',         # Kunci Mati Jangka Waktu 4 Jam (4h)
+            'type': '4hour',         
             'startAt': start_time,
             'endAt': end_time
         }
@@ -97,16 +94,15 @@ def get_indodax_candles_4h(pair):
             data = res_json['data']
             if len(data) > 20:
                 df_raw = pd.DataFrame(data)
-                # Format Kucoin: 0=waktu, 1=open, 2=close, 3=high, 4=low, 5=volume, 6=turnover
-                df_cleaned = pd.DataFrame({
-                    'timestamp': pd.to_datetime(df_raw[0].astype(int), unit='s'),
-                    'open': df_raw[1].astype(float),
-                    'high': df_raw[3].astype(float),
-                    'low': df_raw[4].astype(float),
-                    'close': df_raw[2].astype(float),  # Index ke-2 adalah harga close penentu rumus HMA-20
-                    'volume': df_raw[5].astype(float)
-                })
-                # Balik urutan dataframe dari baris terlama ke baris terbaru agar rolling matematika HMA benar
+                # FIX KUNCI: Ekstrak nomor urut list array matrix data Kucoin secara aman (0=Time, 1=Open, 2=Close, 3=High, 4=Low)
+                df_cleaned = pd.DataFrame()
+                df_cleaned['timestamp'] = pd.to_datetime(df_raw[0].astype(int), unit='s')
+                df_cleaned['open'] = df_raw[1].astype(float)
+                df_cleaned['close'] = df_raw[2].astype(float)
+                df_cleaned['high'] = df_raw[3].astype(float)
+                df_cleaned['low'] = df_raw[4].astype(float)
+                df_cleaned['volume'] = df_raw[5].astype(float)
+                
                 df_cleaned = df_cleaned.iloc[::-1].reset_index(drop=True)
                 return df_cleaned
         return pd.DataFrame()
@@ -124,8 +120,8 @@ def calculate_hma_20(df):
         return series.rolling(p).apply(lambda x: np.dot(x, weights) / weights.sum(), raw=True)
     
     period = 20  
-    half_period = int(period / 2)  # 10
-    sqrt_period = int(np.sqrt(period))  # 4
+    half_period = int(period / 2)  
+    sqrt_period = int(np.sqrt(period))  
     
     wma_half = wma(df['close'], half_period)
     wma_full = wma(df['close'], period)
@@ -197,7 +193,6 @@ def run_autonomous_engine():
     saldo_saat_ini = get_indodax_balance()
     
     for pair in LIST_PAIRS:
-        # Menarik data market koin IDR via infrastruktur raksasa internasional Kucoin
         df = get_indodax_candles_4h(pair)
         
         if df.empty: 
@@ -218,18 +213,12 @@ def run_autonomous_engine():
         
         current_volume_idr = last_bar['volume'] * indodax_price
         
-        if current_volume_idr < min_vol: 
-            add_log_message(f"🔍 {pair} | Sinyal: {current_color} | Status: ⏩ Skip Vol Rendah")
-            continue
-            
         cursor.execute("SELECT last_signal, holding_amount FROM trades WHERE pair = ?", (pair,))
         row = cursor.fetchone()
         last_signal, holding_amount = row if row else ("NONE", 0.0)
         
-        # LAPORAN SUKSES MUTLAK: Menampilkan arah tren sinyal asli koin berjalan detik ini
         add_log_message(f"🔍 {pair} | Sinyal Tren: {current_color} | Posisi SQLite: {last_signal}")
         
-        # LOGIKA BUY (OFFSET -1 TV)
         if confirmed_bar['raw_buy'] and last_signal != 'BUY':
             if saldo_saat_ini < MODAL_PER_TRANSAKSI_IDR:
                 add_log_message(f"⚠️ {pair} | Sinyal: BUY | Status: 🛑 Saldo Dompet Rp {saldo_saat_ini:,.0f} Kurang")
@@ -244,7 +233,6 @@ def run_autonomous_engine():
                 add_log_message(f"🚀 {pair} | Aksi: BERHASIL BUY ORDER")
                 saldo_saat_ini -= MODAL_PER_TRANSAKSI_IDR
                 
-        # LOGIKA SELL (OFFSET -1 TV)
         elif confirmed_bar['raw_sell'] and last_signal == 'BUY':
             coin_to_sell = holding_amount if holding_amount > 0 else (MODAL_PER_TRANSAKSI_IDR / indodax_price)
             res = execute_indodax_trade(pair, "sell", coin_to_sell)
@@ -260,17 +248,19 @@ def run_autonomous_engine():
 cursor = db_conn.cursor()
 cursor.execute("SELECT COUNT(*) FROM history WHERE type='SELL' AND status='SUCCESS'")
 total_win_row = cursor.fetchone()
-total_win = int(total_win_row) if total_win_row else 0
+# PERBAIKAN MUTLAK TUPLE: Mengekstrak elemen indeks [0] sebelum diubah menjadi int
+total_win = int(total_win_row[0]) if total_win_row else 0
 
 cursor.execute("SELECT COUNT(*) FROM history WHERE status='SUCCESS'")
 total_trades_row = cursor.fetchone()
-total_trades = int(total_trades_row) if total_trades_row else 0
+# PERBAIKAN MUTLAK TUPLE: Mengekstrak elemen indeks [0] sebelum diubah menjadi int
+total_trades = int(total_trades_row[0]) if total_trades_row else 0
 
 win_rate = (total_win / (total_trades / 2)) * 100 if total_trades > 1 and total_win > 0 else 100.0
 
 cursor.execute("SELECT last_run FROM settings LIMIT 1")
 last_run_time = cursor.fetchone()
-last_run_display = last_run_time if last_run_time and last_run_time else "Belum Berjalan"
+last_run_display = last_run_time[0] if last_run_time and last_run_time else "Belum Berjalan"
 
 total_modal_aktif = 0.0
 total_valuasi_aktif = 0.0
@@ -282,9 +272,9 @@ try:
         row = cursor.fetchone()
         live_price = get_live_market_price(pair)
         
-        if row and str(row) == 'BUY':
-            entry_price = float(row)
-            holding_amount = float(row)
+        if row and str(row[0]) == 'BUY':
+            entry_price = float(row[1])
+            holding_amount = float(row[2])
             posisi = "🛒 BUYING"
             if live_price is None: live_price = entry_price
             current_value_idr = holding_amount * live_price
@@ -322,7 +312,7 @@ col_w.metric("Win Rate Bot", f"{win_rate:.1f}%")
 
 if last_run_display and " " in last_run_display:
     waktu_saja = last_run_display.split(" ")
-    col_s.metric("Server Terakhir Scan", str(waktu_saja))
+    col_s.metric("Server Terakhir Scan", str(waktu_saja[1]))
 else:
     col_s.metric("Server Terakhir Scan", str(last_run_display))
 
@@ -360,7 +350,7 @@ if st.sidebar.button("💾 Terapkan Batas Risiko"):
     st.sidebar.success("Parameter risiko tersimpan ke Cloud!")
 
 # =====================================================================
-# INTERVAL RE-SCAN KILAT AMAN JALUR INTERNASIONAL (60 DETIK / 1 MENIT)
+# INTERVAL RE-SCAN TINGGI CLOUD (60 DETIK / 1 MENIT)
 # =====================================================================
 run_autonomous_engine()
 time.sleep(60)
