@@ -57,7 +57,7 @@ def get_setting(key, default_text="", default_num=0.0):
     row = cursor.fetchone()
     conn.close()
     if row:
-        return row[0] if default_text != "" else row[1]
+        return row if default_text != "" else row
     return default_text if default_text != "" else default_num
 
 def get_trade_history(filter_type="Semua"):
@@ -206,7 +206,7 @@ def market_monitor_fragment():
     waktu_sekarang = datetime.now().strftime('%H:%M:%S')
     st.caption(f"🔄 Sinkronisasi Indodax (Setiap {refresh_rate_input} Detik): {waktu_sekarang}")
     
-    base_coin = symbol_input.split('/')
+    base_coin = symbol_input.split('/')[0]
     
     if api_input and secret_input:
         try:
@@ -215,7 +215,8 @@ def market_monitor_fragment():
             saldo_coin = balance['free'][base_coin] if base_coin in balance['free'] else 0.0
             st.info(f"💳 **Dompet Akun Real Anda:**  \n💵 Saldo Rupiah: **Rp {saldo_idr:,.0f}**  \n🪙 Sisa Koin ({base_coin}): **{saldo_coin:.6f} {base_coin}**")
         except Exception as bal_err:
-            st.sidebar.error(f"Gagal Memuat Saldo API: {bal_err}")
+            # PERBAIKAN: st.sidebar diubah ke st agar aman dari error StreamlitAPIException
+            st.error(f"⚠️ Gagal Memuat Saldo API Indodax: {bal_err}")
     else:
         st.info(f"🎮 **Dompet Kustom Simulasi:**  \n💵 Saldo Rupiah: **Rp {sim_balance_input:,.0f}**  \n🪙 Sisa Koin ({base_coin}): **0.000000 {base_coin}**")
 
@@ -229,12 +230,11 @@ def market_monitor_fragment():
         prev_prev_hma = df['hma'].iloc[-3]
         current_close = df['close'].iloc[-1]
         
-        # Logika Warna Garis HMA (Arah Kemiringan) [1]
         is_green_now = current_hma >= prev_hma
         is_green_prev = prev_hma >= prev_prev_hma
         
-        raw_buy = is_green_now and not is_green_prev  # Perubahan pertama kali ke hijau [1, 2]
-        raw_sell = not is_green_now and is_green_prev # Perubahan pertama kali ke merah [1, 2]
+        raw_buy = is_green_now and not is_green_prev  
+        raw_sell = not is_green_now and is_green_prev 
         
         col1, col2 = st.columns(2)
         col1.metric(label=f"Harga Sekarang ({symbol_input})", value=f"{current_close:,.0f} IDR")
@@ -244,7 +244,7 @@ def market_monitor_fragment():
         else:
             col2.metric(label="Status Tren HHMA", value="MERAH (SELL ZONE)", delta="-Turun", delta_color="inverse")
             
-        # ─── BARU: LOGIKA PENGUNCIAN PROFIT OTOMATIS (TRAILING STOP) ───
+        # LOGIKA PENGUNCIAN PROFIT OTOMATIS (TRAILING STOP)
         history_conn = sqlite3.connect('trading_bot.db')
         active_trades = pd.read_sql_query("SELECT * FROM trades WHERE status='LIVE_BUY_SUCCESS' OR status='SIMULASI_OPEN'", history_conn)
         history_conn.close()
@@ -254,36 +254,31 @@ def market_monitor_fragment():
             buy_price = row['price']
             highest_so_far = max(row['highest_price'], current_close)
             
-            # Hitung persentase kenaikan dari harga beli ke harga tertinggi yang pernah dicapai
             profit_pct = ((highest_so_far - buy_price) / buy_price) * 100
             
-            # Jika profit sudah menyentuh/melebihi target tp_pct_input, hidupkan kunci profit
             if profit_pct >= tp_pct_input:
-                # Kunci profit: Jika harga turun 0.5% dari harga tertinggi, paksa jual (lock profit)
                 lock_price = highest_so_far * 0.995 
                 if current_close <= lock_price:
-                    if "LIVE" in row['status'] and api_input and secret_key:
+                    if "LIVE" in row['status'] and api_input and secret_input:
                         try: exchange.create_market_sell_order(symbol_input, row['amount'])
                         except: pass
                     update_active_trade(trade_id, highest_so_far, "CLOSED_BY_LOCK_PROFIT")
                     st.toast("💰 Keuntungan Berhasil Dikunci Otomatis!", icon="🔒")
                     st.rerun()
             
-            # Cek Stop Loss fisik dasar
             sl_price = buy_price * (1 - (sl_pct_input / 100))
             if current_close <= sl_price:
-                if "LIVE" in row['status'] and api_input and secret_key:
+                if "LIVE" in row['status'] and api_input and secret_input:
                     try: exchange.create_market_sell_order(symbol_input, row['amount'])
                     except: pass
                 update_active_trade(trade_id, highest_so_far, "CLOSED_BY_STOP_LOSS")
                 st.toast("🟥 Batasan Rugi Terpenuhi (Cut Loss)", icon="🛑")
                 st.rerun()
                 
-            # Jika belum menyentuh TP/SL, selalu perbarui rekor harga tertinggi di DB
             if highest_so_far > row['highest_price']:
                 update_active_trade(trade_id, highest_so_far, row['status'])
 
-        # ─── LOGIKA SAKELAR OTOMATIS BERGANTIAN BUY / SELL ───
+        # LOGIKA SAKELAR OTOMATIS BERGANTIAN BUY / SELL
         if raw_buy and st.session_state.last_signal != 1:
             tp = current_close * (1 + (tp_pct_input / 100))
             sl = current_close * (1 - (sl_pct_input / 100))
