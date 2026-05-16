@@ -133,10 +133,9 @@ def get_live_market_price(pair):
         return None
 
 # =====================================================================
-# FETCH SALDO UTAMA AKTIF LEWAT PRIVATE ENDPOINT INDODAX
+# FETCH SALDO UTAMA LEWAT PRIVATE ENDPOINT
 # =====================================================================
 def get_indodax_balance():
-    """Mengambil sisa saldo Rupiah riil langsung dari dompet Indodax via getInfo"""
     url = "https://indodax.com"
     nonce = int(time.time() * 1000)
     payload = {"method": "getInfo", "nonce": nonce}
@@ -145,7 +144,7 @@ def get_indodax_balance():
     headers = {"Key": API_KEY, "Sign": signature}
     try:
         res = requests.post(url, data=payload, headers=headers, timeout=5).json()
-        if res.get('success') == 1:
+        if res.get('success') == 1 or res.get('success') == '1':
             return float(res['return']['balance']['idr'])
     except:
         pass
@@ -176,7 +175,7 @@ def execute_indodax_trade(pair, action, amount_or_coin):
         return {"success": 0, "error": "Koneksi Ke Server Indodax Timeout"}
 
 # =====================================================================
-# 5. INTEGRASI ENGINE UTAMA & MANAJEMEN RISIKO REAL-TIME
+# 5. INTEGRASI ENGINE UTAMA & REM SALDO PROTEKSI REAL-TIME
 # =====================================================================
 def run_autonomous_engine():
     cursor = db_conn.cursor()
@@ -189,6 +188,9 @@ def run_autonomous_engine():
     db_conn.commit()
     
     log_summary = []
+    
+    # Ambil info sisa uang Rupiah riil sebelum scanning koin dimulai
+    saldo_saat_ini = get_indodax_balance()
     
     for pair in LIST_PAIRS:
         df = get_indodax_candles_4h(pair)
@@ -212,9 +214,15 @@ def run_autonomous_engine():
         row = cursor.fetchone()
         last_signal, holding_amount = row if row else ("NONE", 0.0)
         
-        log_summary.append(f"{pair}: Tren {current_color}")
+        log_summary.append(f"{pair}: {current_color}")
         
+        # 🟢 SINYAL BUY DENGAN PENGEREM SALDO RIIL
         if current_color == 'Green' and last_signal != 'BUY':
+            # JALUR PROTEKSI REM: Jika uang di dompet tidak cukup untuk membeli modal minimal
+            if saldo_saat_ini < MODAL_PER_TRANSAKSI_IDR:
+                add_log_message(f"⚠️ SKIP BUY {pair}: Saldo dompet riil (Rp {saldo_saat_ini:,.0f}) kurang dari Rp {MODAL_PER_TRANSAKSI_IDR:,.0f}")
+                continue
+                
             res = execute_indodax_trade(pair, "buy", MODAL_PER_TRANSAKSI_IDR)
             if res.get("success") == 1:
                 return_receive = float(res['return'].get('receive_coin', 0.0))
@@ -226,7 +234,10 @@ def run_autonomous_engine():
                 cursor.execute("INSERT INTO history (pair, type, price, status, timestamp) VALUES (?, 'BUY', ?, 'SUCCESS', ?)", (pair, current_price, now_str))
                 db_conn.commit()
                 add_log_message(f"🚀 EKSEKUSI BUY SUKSES: {pair} di harga Rp {current_price:,.0f}")
+                # Kurangi saldo di memori bot untuk pair berikutnya
+                saldo_saat_ini -= MODAL_PER_TRANSAKSI_IDR
                 
+        # 🔴 SINYAL SELL RIIL (HMA Merah)
         elif current_color == 'Red' and last_signal == 'BUY':
             coin_to_sell = holding_amount if holding_amount > 0 else (MODAL_PER_TRANSAKSI_IDR / current_price)
             res = execute_indodax_trade(pair, "sell", coin_to_sell)
@@ -239,7 +250,7 @@ def run_autonomous_engine():
                 db_conn.commit()
                 add_log_message(f"📉 EKSEKUSI SELL SUKSES: {pair} di harga Rp {current_price:,.0f}")
 
-    add_log_message(" | ".join(log_summary))
+    add_log_message("Pemindaian Pasar Selesai | " + " | ".join(log_summary))
 
 # =====================================================================
 # 6. LAYAR UTAMA DASHBOARD MONITOR (RESPONSIVE CHROME HP)
@@ -262,7 +273,6 @@ cursor.execute("SELECT last_run FROM settings LIMIT 1")
 last_run_time = cursor.fetchone()
 last_run_display = last_run_time[0] if last_run_time and last_run_time[0] else "Belum Berjalan"
 
-# Ekstraksi dan kalkulasi gabungan seluruh aset untuk Modul Baru
 total_modal_aktif = 0.0
 total_valuasi_aktif = 0.0
 live_data = []
@@ -273,7 +283,7 @@ try:
         row = cursor.fetchone()
         live_price = get_live_market_price(pair)
         
-        if row and row[0] == 'BUY':
+        if row and str(row[0]) == 'BUY':
             entry_price = float(row[1])
             holding_amount = float(row[2])
             posisi = "🛒 BUYING"
@@ -309,7 +319,6 @@ try:
 except:
     pass
 
-# Hitung Akumulasi Persentase Profit/Loss Gabungan Global
 akumulasi_pnl_idr = total_valuasi_aktif - total_modal_aktif
 if total_modal_aktif > 0:
     total_pnl_pct = (akumulasi_pnl_idr / total_modal_aktif) * 100
@@ -324,7 +333,6 @@ col_w, col_s = st.columns(2)
 col_w.metric("Win Rate Bot", f"{win_rate:.1f}%")
 col_s.metric("Server Terakhir Scan", last_run_display.split(" ")[1] if " " in last_run_display else last_run_display)
 
-# PEMBARUAN UTAMA: Blok Tampilan Saldo Utama & Akumulasi Persentase PNL Gabungan
 st.markdown("---")
 col_bal, col_pnl = st.columns(2)
 col_bal.metric("Saldo Utama IDR (Dompet)", f"Rp {saldo_idr_dompet:,.0f}")
@@ -336,9 +344,6 @@ else:
     col_pnl.metric("Total Loss Gabungan", f"{total_pnl_pct:.2f}%", delta=f"Rp {akumulasi_pnl_idr:,.0f}")
 st.markdown("---")
 
-# =====================================================================
-# MODUL LIVE PROFIT: MENAMPILKAN SEMUA 5 ASET PERMANEN
-# =====================================================================
 st.markdown("#### 📋 Status Posisi Semua Aset Aktif")
 if live_data:
     df_display = pd.DataFrame(live_data)
@@ -346,9 +351,6 @@ if live_data:
 else:
     st.write("🔄 *Sedang mengalkulasi tabel komparasi semua aset...*")
 
-# =====================================================================
-# MODUL: TABEL LOG AKTIVITAS PEMINDAIAN (BAWAH SCREEN HP)
-# =====================================================================
 st.markdown("#### 📜 Log Aktivitas Server Cloud (20 Terakhir)")
 try:
     df_logs = pd.read_sql_query("SELECT timestamp as 'Waktu', message as 'Catatan Aktivitas' FROM activity_logs ORDER BY id DESC LIMIT 20", db_conn)
@@ -359,7 +361,6 @@ try:
 except:
     st.write("🔄 *Gagal memuat log aktivitas.*")
 
-# 7. CONTROL PANEL SIDEBAR HP
 st.sidebar.header("⚙️ Manajemen Risiko")
 cursor.execute("SELECT max_mdd, min_vol FROM settings LIMIT 1")
 curr_set = cursor.fetchone()
@@ -373,9 +374,6 @@ if st.sidebar.button("💾 Terapkan Batas Risiko"):
     db_conn.commit()
     st.sidebar.success("Parameter risiko tersimpan ke Cloud!")
 
-# =====================================================================
-# 8. DAEMON AUTO-LOOPING CLOUD (SOLUSI ANTI-LAYAR MATI)
-# =====================================================================
 run_autonomous_engine()
 time.sleep(300)
 st.rerun()
