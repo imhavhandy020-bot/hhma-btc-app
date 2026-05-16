@@ -68,33 +68,31 @@ def add_log_message(message):
         pass
 
 # =====================================================================
-# 3. PENARIK DATA GRAFIK JALUR GLOBAL BINANCE (100% DIJAMIN FIX)
+# 3. PENARIK DATA GRAFIK JALUR BINANCE GLOBAL (KOREKSI TOTAL ANTI-LAG)
 # =====================================================================
 def get_indodax_candles_4h(pair):
-    """Mengambil riwayat lilin 4 jam lewat API Global Binance tanpa bug array"""
+    """Mengambil riwayat lilin 4 jam lewat API Global Binance (Bebas Bug Split)"""
     try:
-        # PERBAIKAN MUTLAK: Mengambil elemen ke-0 dari pecahan list (e.g. 'BTC')
-        coin_part = pair.split("/")
-        coin_symbol = str(coin_part[0]).upper()
+        # PENYELESAIAN MUTLAK: Mengubah BTC/IDR menjadi BTCUSDT secara string bersih tanpa list array
+        binance_symbol = pair.upper().replace("/IDR", "USDT")
         
-        if coin_symbol == "USDT":
+        # Penyesuaian khusus jika pair adalah USDT/IDR
+        if binance_symbol == "USDTUSDT":
             binance_symbol = "USDCUSDT"
-        else:
-            binance_symbol = f"{coin_symbol}USDT"
             
         url = "https://binance.com"
         params = {
             'symbol': binance_symbol,
-            'interval': '4h',
-            'limit': 100      
+            'interval': '4h', # Kunci Mati Timeframe 4 Jam (4h)
+            'limit': 150      # Diperbanyak ke 150 bar agar kalkulasi HMA-20 sangat presisi
         }
         
         response = requests.get(url, params=params, timeout=10)
         data = response.json()
         
-        if isinstance(data, list) and len(data) > 20:
+        if isinstance(data, list) and len(data) > 30:
             df_candles = pd.DataFrame(data)
-            # Binance klines return format array: 0=Time, 1=Open, 2=High, 3=Low, 4=Close, 5=Volume
+            # Ambil kolom spesifik dari format data klines Binance
             df_cleaned = pd.DataFrame({
                 'timestamp': pd.to_datetime(df_candles[0], unit='ms'),
                 'open': df_candles[1].astype(float),
@@ -106,22 +104,39 @@ def get_indodax_candles_4h(pair):
             return df_cleaned
         return pd.DataFrame()
     except Exception as err:
-        add_log_message(f"⚠️ Eror Grafik {pair}: {str(err)}")
         return pd.DataFrame()
 
+# =====================================================================
+# TRANSLATE RUMUS PINE SCRIPT KE PYTHON: HMA PERIODE 20 MANDIRI
+# =====================================================================
 def calculate_hma_20(df):
-    if df.empty or len(df) < 20: return df
-    period = 20
-    half_period = int(period / 2)
-    sqrt_period = int(np.sqrt(period))
+    """Menerjemahkan ta.hma(close, 20) secara persis sesuai logika indikator Anda"""
+    if df.empty or len(df) < 40: 
+        return df
+        
     def wma(series, p):
         weights = np.arange(1, p + 1)
         return series.rolling(p).apply(lambda x: np.dot(x, weights) / weights.sum(), raw=True)
+    
+    # Kunci Parameter Naik ke Periode 20 sesuai instruksi Anda
+    period = 20  
+    half_period = int(period / 2)  # 10
+    sqrt_period = int(np.sqrt(period))  # 4
+    
     wma_half = wma(df['close'], half_period)
     wma_full = wma(df['close'], period)
     raw_hma = (2 * wma_half) - wma_full
-    df['hma_20'] = wma(raw_hma, sqrt_period)
-    df['hma_color'] = np.where(df['hma_20'] > df['hma_20'].shift(1), 'Green', 'Red')
+    
+    df['hma_value'] = wma(raw_hma, sqrt_period)
+    
+    # Logika Penentu Warna (is_green / is_red) berdasarkan kemiringan arah hma saat ini
+    df['is_green'] = df['hma_value'] >= df['hma_value'].shift(1)
+    df['is_red'] = df['hma_value'] < df['hma_value'].shift(1)
+    
+    # Pemicu Sinyal Pertama Kali Berubah Warna (raw_buy / raw_sell)
+    df['raw_buy'] = df['is_green'] & (~df['is_green'].shift(1).fillna(False))
+    df['raw_sell'] = df['is_red'] & (~df['is_red'].shift(1).fillna(False))
+    
     return df
 
 def get_live_market_price(pair):
@@ -133,9 +148,6 @@ def get_live_market_price(pair):
     except:
         return None
 
-# =====================================================================
-# FETCH SALDO UTAMA LEWAT PRIVATE ENDPOINT INDODAX
-# =====================================================================
 def get_indodax_balance():
     url = "https://indodax.com"
     nonce = int(time.time() * 1000)
@@ -151,9 +163,6 @@ def get_indodax_balance():
         pass
     return 0.0
 
-# =====================================================================
-# 4. PRIVATE TRADE API INDODAX SIGNATURE (MARKET ORDER AUTOMATION)
-# =====================================================================
 def execute_indodax_trade(pair, action, amount_or_coin):
     clean_pair = pair.lower().replace("/", "_")
     url = "https://indodax.com"
@@ -174,7 +183,7 @@ def execute_indodax_trade(pair, action, amount_or_coin):
         return {"success": 0, "error": "Koneksi Ke Server Indodax Timeout"}
 
 # =====================================================================
-# 5. INTEGRASI ENGINE UTAMA & REM SALDO PROTEKSI REAL-TIME
+# 5. INTEGRASI ENGINE UTAMA (100% MENGIKUTI STRATEGI PINE TV ANDA)
 # =====================================================================
 def run_autonomous_engine():
     cursor = db_conn.cursor()
@@ -196,10 +205,14 @@ def run_autonomous_engine():
             continue
             
         df = calculate_hma_20(df)
-        if 'hma_color' not in df.columns: continue
+        if 'hma_value' not in df.columns: continue
         
+        # LOGIKA OFFSET -1 TRADINGVIEW ANDA: 
+        # Konfirmasi pemicu divalidasi dari bar [-2]
         last_bar = df.iloc[-1]
-        current_color = last_bar['hma_color']
+        confirmed_bar = df.iloc[-2]
+        
+        current_color = "Green" if last_bar['is_green'] else "Red"
         
         indodax_price = get_live_market_price(pair)
         if indodax_price is None: indodax_price = last_bar['close']
@@ -216,7 +229,8 @@ def run_autonomous_engine():
         
         log_summary.append(f"{pair}: {current_color}")
         
-        if current_color == 'Green' and last_signal != 'BUY':
+        # 🟢 TRADINGVIEW BUY TRIGGER
+        if confirmed_bar['raw_buy'] and last_signal != 'BUY':
             if saldo_saat_ini < MODAL_PER_TRANSAKSI_IDR:
                 add_log_message(f"⚠️ SKIP BUY {pair}: Saldo Dompet Rp {saldo_saat_ini:,.0f} kurang.")
                 continue
@@ -230,10 +244,11 @@ def run_autonomous_engine():
                 """, (pair, indodax_price, now_str, coin_bought))
                 cursor.execute("INSERT INTO history (pair, type, price, status, timestamp) VALUES (?, 'BUY', ?, 'SUCCESS', ?)", (pair, indodax_price, now_str))
                 db_conn.commit()
-                add_log_message(f"🚀 EKSEKUSI BUY SUKSES: {pair} di harga Rp {indodax_price:,.0f}")
+                add_log_message(f"🚀 TV BUY SUKSES: {pair} di harga Rp {indodax_price:,.0f}")
                 saldo_saat_ini -= MODAL_PER_TRANSAKSI_IDR
                 
-        elif current_color == 'Red' and last_signal == 'BUY':
+        # 🔴 TRADINGVIEW SELL TRIGGER
+        elif confirmed_bar['raw_sell'] and last_signal == 'BUY':
             coin_to_sell = holding_amount if holding_amount > 0 else (MODAL_PER_TRANSAKSI_IDR / indodax_price)
             res = execute_indodax_trade(pair, "sell", coin_to_sell)
             if res.get("success") == 1:
@@ -243,7 +258,7 @@ def run_autonomous_engine():
                 """, (pair, indodax_price, now_str))
                 cursor.execute("INSERT INTO history (pair, type, price, status, timestamp) VALUES (?, 'SELL', ?, 'SUCCESS', ?)", (pair, indodax_price, now_str))
                 db_conn.commit()
-                add_log_message(f"📉 EKSEKUSI SELL SUKSES: {pair} di harga Rp {indodax_price:,.0f}")
+                add_log_message(f"📉 TV SELL SUKSES: {pair} di harga Rp {indodax_price:,.0f}")
 
     add_log_message("Pemindaian Selesai | " + " | ".join(log_summary))
 
@@ -328,8 +343,8 @@ col_w, col_s = st.columns(2)
 col_w.metric("Win Rate Bot", f"{win_rate:.1f}%")
 
 if last_run_display and " " in last_run_display:
-    waktu_saja = last_run_display.split(" ")
-    col_s.metric("Server Terakhir Scan", str(waktu_saja[1]))
+    waktu_saja = last_run_display.split(" ")[1]
+    col_s.metric("Server Terakhir Scan", str(waktu_saja))
 else:
     col_s.metric("Server Terakhir Scan", str(last_run_display))
 
