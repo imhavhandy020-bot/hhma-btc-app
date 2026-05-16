@@ -193,7 +193,7 @@ def run_autonomous_engine():
         row = cursor.fetchone()
         last_signal, holding_amount = row if row else ("NONE", 0.0)
         
-        log_summary.append(f"{pair}: Tren {current_color} (Posisi: {last_signal})")
+        log_summary.append(f"{pair}: Tren {current_color}")
         
         if current_color == 'Green' and last_signal != 'BUY':
             res = execute_indodax_trade(pair, "buy", MODAL_PER_TRANSAKSI_IDR)
@@ -228,11 +228,11 @@ def run_autonomous_engine():
 cursor = db_conn.cursor()
 cursor.execute("SELECT COUNT(*) FROM history WHERE type='SELL' AND status='SUCCESS'")
 total_win_row = cursor.fetchone()
-total_win = total_win_row if total_win_row else 0
+total_win = int(total_win_row[0]) if total_win_row else 0
 
 cursor.execute("SELECT COUNT(*) FROM history WHERE status='SUCCESS'")
 total_trades_row = cursor.fetchone()
-total_trades = total_trades_row if total_trades_row else 0
+total_trades = int(total_trades_row[0]) if total_trades_row else 0
 
 if total_trades > 1 and total_win > 0:
     win_rate = (total_win / (total_trades / 2)) * 100
@@ -241,37 +241,34 @@ else:
 
 cursor.execute("SELECT last_run FROM settings LIMIT 1")
 last_run_time = cursor.fetchone()
-last_run_display = last_run_time if last_run_time and last_run_time else "Belum Berjalan"
+last_run_display = last_run_time[0] if last_run_time and last_run_time[0] else "Belum Berjalan"
 
 st.markdown("### 🛡️ Indodax Multi-Pair Pro Server")
 col1, col2 = st.columns(2)
 col1.metric("Win Rate Bot", f"{win_rate:.1f}%")
 
 if last_run_display and " " in last_run_display:
-    waktu_saja = last_run_display.split(" ")
+    waktu_saja = last_run_display.split(" ")[1]
     col2.metric("Server Terakhir Scan", str(waktu_saja))
 else:
     col2.metric("Server Terakhir Scan", str(last_run_display))
 
 # =====================================================================
-# MODUL LIVE PROFIT: MENAMPILKAN SEMUA 5 ASET PERMANEN
+# MODUL LIVE PROFIT: MENAMPILKAN SEMUA 5 ASET PERMANEN (PERBAIKAN TUPLE)
 # =====================================================================
 st.markdown("#### 📋 Status Posisi Semua Aset Aktif")
 try:
     live_data = []
     
     for pair in LIST_PAIRS:
-        # Cari riwayat posisi koin ini di SQLite
         cursor.execute("SELECT last_signal, entry_price, holding_amount FROM trades WHERE pair = ?", (pair,))
         row = cursor.fetchone()
         
-        # Ambil harga live saat ini dari ticker pasar Indodax
         live_price = get_live_market_price(pair)
         
-        if row and row == 'BUY':
-            # JIKA SEDANG PUNYA POSISI AKTIF (ADA SALDO BELI)
-            entry_price = float(row)
-            holding_amount = float(row)
+        if row and row[0] == 'BUY':
+            entry_price = float(row[1])
+            holding_amount = float(row[2])
             posisi = "🛒 BUYING"
             
             if live_price is None: live_price = entry_price
@@ -287,7 +284,6 @@ try:
             saldo_coin_display = f"{holding_amount:.6f}"
             entry_display = f"Rp {entry_price:,.0f}"
         else:
-            # JIKA POSISI SEDANG KOSONG (SUDAH TERJUAL / CLEAN)
             posisi = "💤 CLEAN"
             if live_price is None: live_price = 0.0
             
