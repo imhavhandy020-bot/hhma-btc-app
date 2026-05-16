@@ -68,20 +68,19 @@ def add_log_message(message):
         pass
 
 # =====================================================================
-# 3. INTERFACES JALUR INTEGRASI DNS CLOUDFLARE (1.1.1.1 PROXY BYPASS)
+# 3. PENARIK DATA CHART JALUR INTEGRASI DNS CLOUDFLARE (1.1.1.1 BYPASS)
 # =====================================================================
 def get_real_candles_4h():
     """Mengambil grafik 4 jam menggunakan taktik samaran DNS Cloudflare"""
     try:
-        # Menembak server finansial internasional via header browser murni Cloudflare DNS
         url = "https://yahoo.com"
         
-        # SUNTIKAN 1.1.1.1 JALUR UTAMA: Menyamarkan IP server Cloud agar lolos blokir firewall bursa
+        # SUNTIKAN 1.1.1.1: Menyamarkan IP server Cloud Amerika agar lolos dari blokir bursa
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
             'Accept-Language': 'en-US,en;q=0.5',
-            'X-Forwarded-For': '1.1.1.1' # Paksa server membaca identitas dari Cloudflare Gateway
+            'X-Forwarded-For': '1.1.1.1' 
         }
         
         response = requests.get(url, headers=headers, timeout=10)
@@ -95,7 +94,6 @@ def get_real_candles_4h():
             'timestamp': pd.to_datetime(timestamps, unit='s'),
             'close': candles_data['close']
         })
-        # Bersihkan data penutupan dari nilai kosong (NaN)
         df_raw = df_raw.dropna().reset_index(drop=True)
         return df_raw
     except:
@@ -123,7 +121,6 @@ def calculate_hma_20(df):
     return df
 
 def get_live_market_price():
-    """Mengambil harga live ticker rupiah instan riil berjalan dari Indodax"""
     url = "https://indodax.com"
     try:
         res = requests.get(url, timeout=4).json()
@@ -165,7 +162,7 @@ def execute_indodax_trade(action, amount_or_coin):
         return {"success": 0, "error": "Timeout"}
 
 # =====================================================================
-# 5. ENGINE UTAMA: JALUR SUNTIKAN PROXY CLOUDFLARE 1.1.1.1
+# 5. ENGINE UTAMA: DATA JALUR SUNTIKAN CLOUDFLARE 1.1.1.1
 # =====================================================================
 def run_autonomous_engine():
     cursor = db_conn.cursor()
@@ -174,8 +171,6 @@ def run_autonomous_engine():
     db_conn.commit()
     
     saldo_saat_ini = get_indodax_balance()
-    
-    # Menarik data market asli grafik internasional via Proxy Cloudflare 1.1.1.1 Bypass
     df = get_real_candles_4h()
     
     if df.empty:
@@ -187,16 +182,15 @@ def run_autonomous_engine():
     confirmed_bar = df.iloc[-2]
     
     current_color = "Hijau (BUY)" if last_bar['is_green'] else "Merah (SELL)"
-    
     indodax_price = get_live_market_price()
     if indodax_price is None: indodax_price = float(last_bar['close'])
     
     cursor.execute("SELECT last_signal, holding_amount FROM trades WHERE pair = 'BTC/IDR'")
     row = cursor.fetchone()
-    last_signal = row if row else "NONE"
-    holding_amount = float(row) if row else 0.0
+    last_signal = row[0] if row else "NONE"
+    holding_amount = float(row[2]) if row else 0.0
     
-    # LAPORAN UTAMA AKTIF: Menampilkan arah tren asli riil (Akan terkunci MERAH mengikuti 81.200 USD Anda)
+    # LAPORAN SINYAL SEHAT: Mengunci sinyal pasar riil (Merah kontinu mendeteksi kejatuhan 81.200 USD Anda)
     add_log_message(f"🔍 BTC/IDR | Tren Pasar Riil: {current_color} | Posisi SQLite: {last_signal}")
     
     # BUY
@@ -229,17 +223,19 @@ def run_autonomous_engine():
 cursor = db_conn.cursor()
 cursor.execute("SELECT COUNT(*) FROM history WHERE type='SELL' AND status='SUCCESS'")
 total_win_row = cursor.fetchone()
-total_win = int(total_win_row) if total_win_row else 0
+# PERBAIKAN SINTAKS TUPLE UTAMAL: Mengekstrak elemen indeks [0] sebelum diproses
+total_win = int(total_win_row[0]) if total_win_row else 0
 
 cursor.execute("SELECT COUNT(*) FROM history WHERE status='SUCCESS'")
 total_trades_row = cursor.fetchone()
-total_trades = int(total_trades_row) if total_trades_row else 0
+# PERBAIKAN SINTAKS TUPLE UTAMAL: Mengekstrak elemen indeks [0] sebelum diproses
+total_trades = int(total_trades_row[0]) if total_trades_row else 0
 
 win_rate = (total_win / (total_trades / 2)) * 100 if total_trades > 1 and total_win > 0 else 100.0
 
 cursor.execute("SELECT last_run FROM settings LIMIT 1")
 last_run_time = cursor.fetchone()
-last_run_display = last_run_time if last_run_time else "Belum Berjalan"
+last_run_display = last_run_time[0] if last_run_time else "Belum Berjalan"
 
 total_modal_aktif = 0.0
 total_valuasi_aktif = 0.0
@@ -249,9 +245,9 @@ cursor.execute("SELECT last_signal, entry_price, holding_amount FROM trades WHER
 row = cursor.fetchone()
 live_price = get_live_market_price()
 
-if row and str(row) == 'BUY':
-    entry_price = float(row)
-    holding_amount = float(row)
+if row and str(row[0]) == 'BUY':
+    entry_price = float(row[1])
+    holding_amount = float(row[2])
     posisi = "🛒 BUYING"
     if live_price is None: live_price = entry_price
     current_value_idr = holding_amount * live_price
@@ -288,7 +284,7 @@ col_w.metric("Win Rate Bot", f"{win_rate:.1f}%")
 
 if last_run_display and " " in last_run_display:
     waktu_saja = last_run_display.split(" ")
-    col_s.metric("Server Terakhir Scan", str(waktu_saja))
+    col_s.metric("Server Terakhir Scan", str(waktu_saja[1]))
 else:
     col_s.metric("Server Terakhir Scan", str(last_run_display))
 
@@ -315,8 +311,9 @@ st.sidebar.header("⚙️ Parameter Risiko")
 cursor = db_conn.cursor()
 cursor.execute("SELECT max_mdd, min_vol FROM settings LIMIT 1")
 curr_set = cursor.fetchone()
-curr_mdd = float(curr_set) if curr_set else 5.0
-curr_vol = float(curr_set) if curr_set else 50000000.0
+# PERBAIKAN SIDEBAR TUPLE: Mengekstrak indeks array secara ketat
+curr_mdd = float(curr_set[0]) if curr_set else 5.0
+curr_vol = float(curr_set[1]) if curr_set else 50000000.0
 
 input_mdd = st.sidebar.number_input("Max Drawdown (%)", value=curr_mdd, step=0.5)
 input_vol = st.sidebar.number_input("Min Volume 24J", value=int(curr_vol), step=5000000)
@@ -326,7 +323,7 @@ if st.sidebar.button("💾 Terapkan Batas"):
     db_conn.commit()
     st.sidebar.success("Risiko Terkunci!")
 
-# Looping aman berkala 60 detik (1 menit) lewat samaran DNS Cloudflare
+# Putar pemindaian berkala 1 menit (60 detik) aman Cloudflare Proxy
 run_autonomous_engine()
 time.sleep(60)
 st.rerun()
