@@ -25,16 +25,14 @@ def init_db():
     conn = sqlite3.connect('trading_bot.db', check_same_thread=False, timeout=20)
     cursor = conn.cursor()
     
-    # PERBAIKAN RADIKAL: Hancurkan tabel trades lama yang rusak akibat indeks tertukar
+    # Hancurkan tabel trades lama jika susunan kolom terbukti tidak valid
     try:
-        # Cek apakah struktur kolomnya valid untuk dibaca Pandas
         cursor.execute("SELECT pair, last_signal, entry_price, timestamp, holding_amount FROM trades LIMIT 1")
     except sqlite3.OperationalError:
-        # Jika error (struktur kolom berantakan), hapus tabel lama secara total
         cursor.execute("DROP TABLE IF EXISTS trades")
         conn.commit()
     
-    # Buat ulang tabel trades dengan susunan kolom yang bersih dan mutlak
+    # Buat ulang tabel trades dengan susunan kolom murni dan mutlak
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS trades (
             pair TEXT PRIMARY KEY, 
@@ -212,16 +210,20 @@ else:
 
 cursor.execute("SELECT last_run FROM settings LIMIT 1")
 last_run_time = cursor.fetchone()
-last_run_display = last_run_time[0] if last_run_time else "Menghubungkan..."
+last_run_display = last_run_time[0] if last_run_time and last_run_time[0] else "Belum Berjalan"
 
 st.markdown("### 🛡️ Indodax Multi-Pair Pro Server")
 col1, col2 = st.columns(2)
 col1.metric("Win Rate Bot", f"{win_rate:.1f}%")
-col2.metric("Server Terakhir Scan", last_run_display.split(" ") if " " in last_run_display else last_run_display)
+
+# PERBAIKAN TOTAL: Memastikan waktu yang dikirim ke st.metric berupa teks murni (String)
+if last_run_display and " " in last_run_display:
+    waktu_saja = last_run_display.split(" ")[1]  # Mengambil bagian jam (String)
+    col2.metric("Server Terakhir Scan", str(waktu_saja))
+else:
+    col2.metric("Server Terakhir Scan", str(last_run_display))
 
 st.markdown("#### 📋 Running Trades (Status Posisi)")
-
-# TONGKAT PENGAMAN KEDUA: Membungkus pembacaan Pandas agar kebal dari kerusakan SQLite
 try:
     df_running = pd.read_sql_query("""
         SELECT pair as 'Pair', last_signal as 'Posisi', 
