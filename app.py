@@ -18,30 +18,36 @@ SECRET_KEY = st.secrets.get("INDODAX_SECRET_KEY", "ISI_SECRET_KEY_RIIL_ANDA")
 # Daftar Pair Aktif sesuai Rangka Dasar Anda
 LIST_PAIRS = ['BTC/IDR', 'ETH/IDR', 'USDT/IDR', 'SOL/IDR', 'DOGE/IDR']
 
-# Alokasi Modal Tetap untuk Pembalian Pasar (Market Order IDR)
+# Alokasi Modal Tetap untuk Pembelian Pasar (Market Order IDR)
 # Indodax mewajibkan Market Buy diisi dengan jumlah nominal Rupiah (IDR)
 MODAL_PER_TRANSAKSI_IDR = 50000.0  # Contoh: Rp 50.000 per eksekusi BUY
 
 # =====================================================================
-# 2. SISTEM MEMORI PERMANEN (SQLITE DATABASE ENGINE)
+# 2. SISTEM MEMORI PERMANEN & MIGRASI DATABASE (ANTI-CRASH)
 # =====================================================================
 def init_db():
-    """Inisialisasi tabel basis data anti-reset di server cloud"""
+    """Inisialisasi tabel basis data anti-reset dengan migrasi kolom otomatis"""
     conn = sqlite3.connect('trading_bot.db', check_same_thread=False, timeout=30)
     cursor = conn.cursor()
     
-    # Tabel Pencatat Status Terakhir (Sistem Pengunci Sinyal)
+    # A. Pastikan tabel trades utama terbentuk
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS trades (
             pair TEXT PRIMARY KEY, 
             last_signal TEXT, 
             entry_price REAL, 
-            holding_amount REAL,
             timestamp TEXT
         )
     """)
     
-    # Tabel Log Riwayat Transaksi Sukses untuk Widget Win Rate
+    # B. PROTEKSI ERROR: Migrasi otomatis jika kolom 'holding_amount' belum ada
+    try:
+        cursor.execute("SELECT holding_amount FROM trades LIMIT 1")
+    except sqlite3.OperationalError:
+        cursor.execute("ALTER TABLE trades ADD COLUMN holding_amount REAL DEFAULT 0.0")
+        conn.commit()
+    
+    # C. Pastikan tabel log riwayat transaksi ada
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS history (
             id INTEGER PRIMARY KEY AUTOINCREMENT, 
@@ -53,7 +59,7 @@ def init_db():
         )
     """)
     
-    # Tabel Konfigurasi Risiko Manajemen Darurat
+    # D. Pastikan tabel konfigurasi risiko ada dan memiliki kolom lengkap
     try:
         cursor.execute("SELECT last_run FROM settings LIMIT 1")
     except sqlite3.OperationalError:
@@ -124,7 +130,7 @@ def calculate_hma_20(df):
 def execute_indodax_trade(pair, action, amount_or_coin):
     """Menembak endpoint transaksi instan pasar asli Indodax secara terenkripsi"""
     clean_pair = pair.lower().replace("/", "_")
-    url = "https://indodax.com/tapi"
+    url = "https://indodax.com"
     nonce = int(time.time() * 1000)
     
     payload = {
@@ -141,7 +147,6 @@ def execute_indodax_trade(pair, action, amount_or_coin):
         payload["idr"] = str(int(amount_or_coin))
     else:
         payload["order_type"] = "market"  # Pastikan flag market tersemat untuk penjualan
-        # Ganti format ke string desimal dengan presisi tinggi untuk unit koin
         payload["amount"] = f"{amount_or_coin:.8f}"
         
     query_string = requests.compat.urlencode(payload)
@@ -192,24 +197,22 @@ def run_autonomous_engine():
         if current_color == 'Green' and last_signal != 'BUY':
             res = execute_indodax_trade(pair, "buy", MODAL_PER_TRANSAKSI_IDR)
             if res.get("success") == 1:
-                # Dapatkan jumlah estimasi koin bersih yang dibeli dari response
                 return_receive = float(res['return'].get('receive_coin', 0.0))
                 coin_bought = return_receive if return_receive > 0 else (MODAL_PER_TRANSAKSI_IDR / current_price)
                 
                 cursor.execute("INSERT OR REPLACE INTO trades VALUES (?, 'BUY', ?, ?, ?)", 
-                               (pair, current_price, coin_bought, now_str))
+                               (pair, current_price, now_str, coin_bought))
                 cursor.execute("INSERT INTO history (pair, type, price, status, timestamp) VALUES (?, 'BUY', ?, 'SUCCESS', ?)", 
                                (pair, current_price, now_str))
                 db_conn.commit()
                 
         # 🔴 LOGIKA EKSEKUSI SELL (HMA Merah / Sistem Anti-Repaint Darurat)
         elif current_color == 'Red' and last_signal == 'BUY':
-            # Gunakan sisa koin di memori database untuk dilepas ke pasar IDR
             coin_to_sell = holding_amount if holding_amount > 0 else (MODAL_PER_TRANSAKSI_IDR / current_price)
             
             res = execute_indodax_trade(pair, "sell", coin_to_sell)
             if res.get("success") == 1:
-                cursor.execute("INSERT OR REPLACE INTO trades VALUES (?, 'SELL', ?, 0.0, ?)", 
+                cursor.execute("INSERT OR REPLACE INTO trades VALUES (?, 'SELL', ?, ?, 0.0)", 
                                (pair, current_price, now_str))
                 cursor.execute("INSERT INTO history (pair, type, price, status, timestamp) VALUES (?, 'SELL', ?, 'SUCCESS', ?)", 
                                (pair, current_price, now_str))
@@ -234,7 +237,12 @@ last_run_display = last_run_time[0] if last_run_time else "--:--"
 st.markdown("### 🛡️ Indodax Multi-Pair Pro Server")
 col1, col2 = st.columns(2)
 col1.metric("Win Rate Bot", f"{win_rate:.1f}%")
-col2.metric("Server Terakhir Scan", last_run_display.split(" ")[1] if " " in last_run_display else last_run_display)
+
+if last_run_display and " " in last_run_display:
+    waktu_saja = last_run_display.split(" ")[1]
+    col2.metric("Server Terakhir Scan", waktu_saja)
+else:
+    col2.metric("Server Terakhir Scan", last_run_display)
 
 # Komponen Tabel Live Running Trades
 st.markdown("#### 📋 Running Trades (Status Posisi)")
@@ -253,7 +261,7 @@ else:
 st.sidebar.header("⚙️ Manajemen Risiko")
 cursor.execute("SELECT max_mdd, min_vol FROM settings LIMIT 1")
 curr_set = cursor.fetchone()
-curr_mdd, curr_vol = curr_set if curr_set else (5.0, 50000000)
+curr_mdd, curr_vol = curr_set[:2] if curr_set else (5.0, 50000000)
 
 input_mdd = st.sidebar.number_input("Max Drawdown Harian (%)", value=curr_mdd, step=0.5)
 input_vol = st.sidebar.number_input("Min Volume 24J (IDR)", value=int(curr_vol), step=5000000)
@@ -266,8 +274,6 @@ if st.sidebar.button("💾 Terapkan Batas Risiko"):
 # =====================================================================
 # 8. DAEMON AUTO-LOOPING CLOUD (SOLUSI ANTI-LAYAR MATI)
 # =====================================================================
-# Bagian ini akan memaksa server Streamlit Cloud terus memutar script 
-# di latar belakang setiap 5 menit meskipun Anda mengunci layar HP.
 run_autonomous_engine()
 time.sleep(300)  # Menahan loop selama 5 Menit (300 detik) sebelum scanning ulang
 st.rerun()
