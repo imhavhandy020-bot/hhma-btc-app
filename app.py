@@ -1,12 +1,12 @@
-import streamlit st
-import pandas pd
-import numpy np
+import streamlit as st
+import pandas as pd
+import numpy as np
 import requests
 import sqlite3
 import time
 import hmac
 import hashlib
-from datetime datetime
+from datetime import datetime
 
 # =====================================================================
 # 1. INTEGRASI API KEYS RIIL INDODAX (TERENKRIPSI)
@@ -44,7 +44,7 @@ def init_db():
             id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp TEXT, message TEXT
         )
     """)
-    # Tabel baru untuk menyimpan rekam jejak harga live lokal demi kestabilan HMA-20
+    # Tabel untuk menyimpan rekam jejak harga live lokal demi kestabilan HMA-20
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS local_candles (
             id INTEGER PRIMARY KEY AUTOINCREMENT, pair TEXT, close REAL, timestamp TEXT
@@ -90,7 +90,7 @@ def get_local_candles_dataframe(pair, current_price):
     cursor = db_conn.cursor()
     now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     
-    # Simpan harga detik ini ke dalam memori permanen database
+    # Simpan harga detik ini ke dalam memori database
     cursor.execute("INSERT INTO local_candles (pair, close, timestamp) VALUES (?, ?, ?)", (pair, current_price, now_str))
     # Batasi memori hanya menyimpan 60 rekaman terakhir agar ringan
     cursor.execute("DELETE FROM local_candles WHERE id NOT IN (SELECT id FROM local_candles WHERE pair=? ORDER BY id DESC LIMIT 60)", (pair,))
@@ -227,7 +227,7 @@ def run_autonomous_engine():
                 add_log_message(f"📉 {pair} | Aksi: BERHASIL SELL ORDER")
 
 # =====================================================================
-# 6. LAYAR monitor CHROME HP
+# 6. LAYAR MONITOR CHROME HP
 # =====================================================================
 cursor = db_conn.cursor()
 cursor.execute("SELECT COUNT(*) FROM history WHERE type='SELL' AND status='SUCCESS'")
@@ -242,7 +242,7 @@ win_rate = (total_win / (total_trades / 2)) * 100 if total_trades > 1 and total_
 
 cursor.execute("SELECT last_run FROM settings LIMIT 1")
 last_run_time = cursor.fetchone()
-last_run_display = last_run_time[0] if last_run_time and last_run_time[0] else "Belum Berjalan"
+last_run_display = last_run_time[0] if last_run_time else "Belum Berjalan"
 
 total_modal_aktif = 0.0
 total_valuasi_aktif = 0.0
@@ -255,8 +255,8 @@ try:
         live_price, _ = get_live_market_price(pair)
         
         if row and str(row[0]) == 'BUY':
-            entry_price = float(row[2])
-            holding_amount = float(row[4])
+            entry_price = float(row[1])
+            holding_amount = float(row[2])
             posisi = "🛒 BUYING"
             if live_price is None: live_price = entry_price
             current_value_idr = holding_amount * live_price
@@ -293,8 +293,8 @@ col_w, col_s = st.columns(2)
 col_w.metric("Win Rate Bot", f"{win_rate:.1f}%")
 
 if last_run_display and " " in last_run_display:
-    waktu_saja = last_run_display.split(" ")
-    col_s.metric("Server Terakhir Scan", str(waktu_saja[1]))
+    waktu_saja = last_run_display.split(" ")[1]
+    col_s.metric("Server Terakhir Scan", str(waktu_saja))
 else:
     col_s.metric("Server Terakhir Scan", str(last_run_display))
 
@@ -319,9 +319,10 @@ except:
     st.write("🔄 *Gagal memuat log aktivitas.*")
 
 st.sidebar.header("⚙️ Manajemen Risiko")
+cursor = db_conn.cursor()
 cursor.execute("SELECT max_mdd, min_vol FROM settings LIMIT 1")
 curr_set = cursor.fetchone()
-curr_mdd, curr_vol = curr_set[0], curr_set[1] if curr_set else (5.0, 50000000)
+curr_mdd, curr_vol = curr_set if curr_set else (5.0, 50000000)
 
 input_mdd = st.sidebar.number_input("Max Drawdown Harian (%)", value=curr_mdd, step=0.5)
 input_vol = st.sidebar.number_input("Min Volume 24J (IDR)", value=int(curr_vol), step=5000000)
@@ -331,7 +332,7 @@ if st.sidebar.button("💾 Terapkan Batas Risiko"):
     db_conn.commit()
     st.sidebar.success("Parameter risiko tersimpan ke Cloud!")
 
-# Putar pemindaian super cepat & kilat di database internal Anda (60 Detik)
+# Putar pemindaian mandiri di database lokal
 run_autonomous_engine()
 time.sleep(60)
 st.rerun()
