@@ -48,39 +48,76 @@ def set_setting(key, val):
 init_db()
 
 # ==========================================
-# 2. DATA PASAR ASLI INDODAX (REAL-TIME)
+# 2. SISTEM OTOMATIS MEMBACA KUNCI SECRETS (ANTI-REFRESH HILANG)
 # ==========================================
-@st.cache_data(ttl=60)
+try:
+    api_key_input = st.secrets["INDODAX_API_KEY"]
+    secret_key_input = st.secrets["INDODAX_SECRET_KEY"]
+    default_modal = int(st.secrets["DEFAULT_MODAL_BELANJA"])
+    default_sl = float(st.secrets["DEFAULT_STOP_LOSS"])
+    default_mode = st.secrets["DEFAULT_MODE_AKUN"]
+    bot_is_authenticated = True
+except Exception:
+    api_key_input = ""
+    secret_key_input = ""
+    default_modal = 100000
+    default_sl = 2.0
+    default_mode = "Demo/Simulasi"
+    bot_is_authenticated = False
+
+# ==========================================
+# 3. DATA PASAR ASLI INDODAX (REAL-TIME)
+# ==========================================
+@st.cache_data(ttl=30)
 def fetch_live_indodax_data(pair):
     pair_id = pair.replace('/', '_').lower()
     url = f"https://indodax.com{pair_id}&tf=4h"
     try:
-        response = requests.get(url, timeout=10)
+        response = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=10)
         data = response.json()
+        if not data or not isinstance(data, list):
+            return pd.DataFrame()
+            
         df = pd.DataFrame(data, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
         df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
         df.set_index('timestamp', inplace=True)
         for col in ['open', 'high', 'low', 'close', 'volume']:
-            df[col] = df[col].astype(float)
+            df[col] = pd.to_numeric(df[col], errors='coerce')
+        df.dropna(subset=['close'], inplace=True)
         return df
     except:
         return pd.DataFrame()
 
 # ==========================================
-# 3. ENGINE EKSEKUSI API PRIVATE INDODAX (LIVE)
+# 4. ENGINE EKSEKUSI API PRIVATE INDODAX (LIVE)
 # ==========================================
+def ambil_saldo_indodax(api_key, secret_key, pair):
+    url_tapi = "https://indodax.com"
+    nonce = int(time.time() * 1000)
+    payload = {'method': 'getInfo', 'nonce': nonce}
+    coin_code = pair.split('/')[0].lower()
+    try:
+        query_string = urlencode(payload)
+        signature = hmac.new(bytes(secret_key, 'utf-8'), msg=bytes(query_string, 'utf-8'), digestmod=hashlib.sha512).hexdigest()
+        headers = {'Key': api_key, 'Sign': signature, 'Content-Type': 'application/x-www-form-urlencoded'}
+        response = requests.post(url_tapi, data=payload, headers=headers, timeout=10)
+        hasil_json = response.json()
+        if hasil_json.get('success') == 1:
+            balances = hasil_json['return']['balance']
+            return {"success": True, "idr": float(balances.get('idr', 0.0)), "coin": float(balances.get(coin_code, 0.0)), "coin_symbol": coin_code.upper()}
+        return {"success": False, "error": hasil_json.get('error')}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
 def kirim_order_indodax(api_key, secret_key, pair, tipe_aksi, nominal_idr=None, jumlah_coin=None):
-    """Fungsi enkripsi HMAC-SHA512 untuk menembak order asli ke pasar Indodax"""
     pair_id = pair.replace('/', '_').lower()
     url_tapi = "https://indodax.com"
     nonce = int(time.time() * 1000)
     payload = {'method': 'trade', 'pair': pair_id, 'nonce': nonce}
-    
     if tipe_aksi.upper() == "BUY":
-        payload.update({'type': 'buy', 'order_type': 'market', 'idr': int(nominal_idr if nominal_idr else 50000)})
+        payload.update({'type': 'buy', 'order_type': 'market', 'idr': int(nominal_idr)})
     elif tipe_aksi.upper() == "SELL":
         payload.update({'type': 'sell', 'order_type': 'market', 'coin': float(jumlah_coin if jumlah_coin else 0.0)})
-        
     try:
         query_string = urlencode(payload)
         signature = hmac.new(bytes(secret_key, 'utf-8'), msg=bytes(query_string, 'utf-8'), digestmod=hashlib.sha512).hexdigest()
@@ -91,35 +128,26 @@ def kirim_order_indodax(api_key, secret_key, pair, tipe_aksi, nominal_idr=None, 
         return {"success": 0, "error": str(e)}
 
 # ==========================================
-# 4. SIDEBAR UTAMA & PARAMETER KEAMANAN
+# 5. SIDEBAR UTAMA & PARAMETER AMAN REFRESH
 # ==========================================
-st.sidebar.header("⚙️ KONTROL KUNCI BOT")
-
-# Input Key Pengaman: Ketik Key asli untuk LIVE TRADING, kosongkan untuk STOP/MOGOK
-api_key_input = st.sidebar.text_input("🔑 API Key Indodax", type="password")
-secret_key_input = st.sidebar.text_input("🔒 Secret Key Indodax", type="password")
-
-bot_is_authenticated = bool(api_key_input and secret_key_input)
+st.sidebar.header("⚙️ STATUS KUNCI SECRETS")
 
 if bot_is_authenticated:
-    st.sidebar.success("🟢 MESIN AKTIF (Kunci Terhubung)")
+    st.sidebar.success("🟢 MESIN AKTIF (Kunci Terkunci di Server)")
 else:
-    st.sidebar.error("🔴 MESIN MATI TOTAL (Kunci Terputus)")
+    st.sidebar.error("🔴 MESIN MATI (Isi Menu Secrets Dahulu)")
 
 st.sidebar.markdown("---")
 st.sidebar.header("📊 PARAMETER TRADING")
 
-# Modal Belanja Dinamis dari Sidebar HP
-order_size_idr = st.sidebar.number_input("💰 Modal Beli per Trade (IDR)", min_value=10000, value=50000, step=10000)
+order_size_idr = st.sidebar.number_input("💰 Modal Beli per Trade (IDR)", min_value=10000, value=default_modal, step=10000)
+sl_input = st.sidebar.number_input("Stop Loss Fisik (%)", min_value=0.5, max_value=10.0, value=default_sl, step=0.1)
+mode_dompet = st.sidebar.radio("Mode Perhitungan", ["Demo/Simulasi", "Live Trading Real"], index=0 if default_mode == "Demo/Simulasi" else 1)
 
-# Parameter HMA-20 ditanam langsung mati di sini
 hma_period = 20
 
-sl_input = st.sidebar.number_input("Stop Loss Fisik (%)", min_value=0.5, max_value=10.0, value=2.0, step=0.1)
-mode_dompet = st.sidebar.radio("Mode Perhitungan", ["Demo/Simulasi", "Live Trading Real"])
-
 # ==========================================
-# 5. ENGINE STRATEGI HMA (UNIVERSAL)
+# 6. ENGINE STRATEGI HMA (UNIVERSAL)
 # ==========================================
 def hitung_hma_dinamis(df, period):
     df = df.copy()
@@ -137,11 +165,11 @@ def hitung_hma_dinamis(df, period):
     return df
 
 # ==========================================
-# 6. CORE LOGIKA TRADING AGRESIF INSTAN & TTP
+# 7. CORE LOGIKA TRADING AGRESIF INSTAN & TTP
 # ==========================================
 def jalankan_engine_bot(pair, df):
     if df.empty:
-        return df, "Data Pasar Kosong", 0.0
+        return df, "Menghubungkan Server Indodax...", 0.0
     df = hitung_hma_dinamis(df, hma_period)
     
     bar_berjalan = df.iloc[-1]
@@ -156,7 +184,7 @@ def jalankan_engine_bot(pair, df):
     highest_price = float(get_setting(f"highest_price_{pair}", default=0.0))
     
     pemicu_aksi = None
-    notif_pesan = "Kunci Terbuka. Bot Berhenti." if not bot_is_authenticated else "Menunggu Sinyal Valid..."
+    notif_pesan = "Menunggu Transisi Perubahan Warna HMA..."
     
     if bot_is_authenticated:
         if posisi_aktif == "TRUE":
@@ -183,13 +211,11 @@ def jalankan_engine_bot(pair, df):
 
         if pemicu_aksi:
             api_success = True
-            
-            # --- EKSEKUSI ORDER NYATA KE BURSA INDODAX ---
             if mode_dompet == "Live Trading Real":
                 if pemicu_aksi == "BUY":
                     res_api = kirim_order_indodax(api_key_input, secret_key_input, pair, "BUY", nominal_idr=order_size_idr)
                 else:
-                    res_api = kirim_order_indodax(api_key_input, secret_key_input, pair, "SELL", jumlah_coin=0.0) # 0.0 menjual semua koin yang ada
+                    res_api = kirim_order_indodax(api_key_input, secret_key_input, pair, "SELL", jumlah_coin=0.0)
                 
                 if res_api.get('success') != 1:
                     api_success = False
@@ -220,7 +246,7 @@ def jalankan_engine_bot(pair, df):
     return df, notif_pesan, harga_sekarang
 
 # ==========================================
-# 7. TAMPILAN WIDGETS CHROME HP
+# 8. TAMPILAN WIDGETS CHROME HP
 # ==========================================
 conn = sqlite3.connect(DB_NAME)
 try:
@@ -233,26 +259,37 @@ total_trades = len(df_trades)
 win_rate = (len(df_trades[df_trades['profit_idr'] > 0]) / total_trades) * 100 if total_trades > 0 else 0.0
 total_net_profit = df_trades['profit_idr'].sum() if total_trades > 0 else 0.0
 
-col1, col2, col3 = st.columns(3)
-col1.metric("Win Rate", f"{win_rate:.1f}%", f"{total_trades} Trades")
-col2.metric("Net Profit", f"Rp {total_net_profit:,.0f}")
-col3.metric("Live Wallet", "8.12345678 BTC" if mode_dompet == "Live Trading Real" else "100,000,000 IDR")
-
 daftar_pair = ['BTC/IDR', 'ETH/IDR', 'USDT/IDR', 'SOL/IDR', 'DOGE/IDR']
 selected_pair = st.selectbox("🎯 Pilih Monitor Grafik Pair:", daftar_pair)
+
+saldo_idr_tampil = 100000000.0
+saldo_coin_tampil = 8.12345678
+coin_label = selected_pair.split('/')[0]
+
+if mode_dompet == "Live Trading Real" and bot_is_authenticated:
+    data_dompet = ambil_saldo_indodax(api_key_input, secret_key_input, pair=selected_pair)
+    if data_dompet.get("success"):
+        saldo_idr_tampil = data_dompet["idr"]
+        saldo_coin_tampil = data_dompet["coin"]
+        coin_label = data_dompet["coin_symbol"]
+
+col1, col2, col3 = st.columns(3)
+col1.metric("Win Rate", f"{win_rate:.1f}%", f"{total_trades} Trades")
+col2.metric("Wallet IDR", f"Rp {saldo_idr_tampil:,.0f}")
+col3.metric(f"Wallet {coin_label}", f"{saldo_coin_tampil:.8f}")
 
 df_market = fetch_live_indodax_data(selected_pair)
 df_hasil, status_bot, live_price = jalankan_engine_bot(selected_pair, df_market)
 
 if bot_is_authenticated:
-    st.success(f"🤖 **Status Sistem:** {status_bot} | **Harga:** Rp {live_price:,.2f}")
+    st.success(f"🤖 **Status Sinyal:** {status_bot} | **Harga Riil:** Rp {live_price:,.2f}")
 else:
-    st.error(f"🛑 **Status Keamanan:** Kunci Terputus. Masukkan API Key di Sidebar untuk Menjalankan Mesin.")
+    st.error(f"🛑 **Status Keamanan:** Masukkan API Key dan Secret Key di menu Secrets Dasbor Streamlit Cloud.")
 
 # ==========================================
-# 8. GRAFIK PLOTLY REAL-TIME & TABEL JURNAL
+# 9. GRAFIK PLOTLY REAL-TIME & TABEL JURNAL
 # ==========================================
-if not df_hasil.empty:
+if not df_hasil.empty and 'hma_val' in df_hasil.columns:
     fig = go.Figure()
     fig.add_trace(go.Candlestick(x=df_hasil.index, open=df_hasil['open'], high=df_hasil['high'], low=df_hasil['low'], close=df_hasil['close'], name="Candle"))
     fig.add_trace(go.Scatter(x=df_hasil.index, y=df_hasil['hma_val'], line=dict(color='cyan', width=2), name="HMA 20"))
