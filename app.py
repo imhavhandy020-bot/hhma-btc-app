@@ -68,38 +68,40 @@ def add_log_message(message):
         pass
 
 # =====================================================================
-# 3. PENARIK DATA GRAFIK DENGAN PEMBERSIH KOLOM GANDA (ANTI-FAIL)
+# 3. PENARIK DATA GRAFIK JALUR GLOBAL BINANCE (BEBAS BLOKIR IP)
 # =====================================================================
 def get_indodax_candles_4h(pair):
-    clean_pair = pair.lower().replace("/", "")
-    url_primary = "https://indodax.com"
-    end_time = int(time.time())
-    start_time = end_time - (100 * 4 * 3600)  
-    params = {'symbol': clean_pair.upper(), 'resolution': '240', 'from': start_time, 'to': end_time}
+    """Mengambil riwayat lilin 4 jam lewat API Global Binance agar bebas blokir IP Streamlit"""
+    # Ubah format pair Indodax ke simbol Binance (e.g., BTC/IDR -> BTCUSDT)
+    # Kebanyakan koin dianalisis stabil lewat acuan pasar USDT global
+    coin_symbol = pair.split("/")[0].upper()
+    if coin_symbol == "USDT":
+        # Khusus USDT/IDR, kita ambil acuan grafik USDC/USDT di Binance
+        binance_symbol = "USDCUSDT"
+    else:
+        binance_symbol = f"{coin_symbol}USDT"
+        
+    url = "https://binance.com"
+    params = {
+        'symbol': binance_symbol,
+        'interval': '4h', # Timeframe 4 Jam sesuai spesifikasi Pro Anda
+        'limit': 100      # Mengambil 100 bar terakhir untuk kestabilan kalkulasi HMA-20
+    }
     
     try:
-        response = requests.get(url_primary, params=params, timeout=8)
+        response = requests.get(url, params=params, timeout=10)
         data = response.json()
-        if data.get('s') == 'ok':
-            return pd.DataFrame({
-                'timestamp': pd.to_datetime(data['t'], unit='s'),
-                'open': data['o'], 'high': data['h'], 'low': data['l'], 'close': data['c'], 'volume': data['v']
-            })
-    except:
-        pass
-
-    url_backup = f"https://indodax.com{clean_pair}/historical"
-    try:
-        res = requests.get(url_backup, timeout=8).json()
-        if isinstance(res, list) and len(res) > 5:
-            df = pd.DataFrame(res)
-            df.columns = [str(col).lower() for col in df.columns]
-            
+        
+        if isinstance(data, list) and len(data) > 20:
+            # Mengubah format array mentah Binance menjadi Dataframe Pandas
+            df_candles = pd.DataFrame(data)
             df_cleaned = pd.DataFrame({
-                'timestamp': pd.to_datetime(df['timestamp'], unit='ms'),
-                'open': df['open'].astype(float), 'high': df['high'].astype(float),
-                'low': df['low'].astype(float), 'close': df['close'].astype(float),
-                'volume': df['volume'].astype(float)
+                'timestamp': pd.to_datetime(df_candles[0], unit='ms'),
+                'open': df_candles[1].astype(float),
+                'high': df_candles[2].astype(float),
+                'low': df_candles[3].astype(float),
+                'close': df_candles[4].astype(float),
+                'volume': df_candles[5].astype(float)
             })
             return df_cleaned
     except:
@@ -132,7 +134,7 @@ def get_live_market_price(pair):
         return None
 
 # =====================================================================
-# FETCH SALDO UTAMA LEWAT PRIVATE ENDPOINT
+# FETCH SALDO UTAMA LEWAT PRIVATE ENDPOINT INDODAX
 # =====================================================================
 def get_indodax_balance():
     url = "https://indodax.com"
@@ -188,6 +190,7 @@ def run_autonomous_engine():
     saldo_saat_ini = get_indodax_balance()
     
     for pair in LIST_PAIRS:
+        # Menarik data market via infrastruktur raksasa Binance Global
         df = get_indodax_candles_4h(pair)
         if df.empty: 
             log_summary.append(f"{pair}: Jaringan Gagal")
@@ -198,9 +201,14 @@ def run_autonomous_engine():
         
         last_bar = df.iloc[-1]
         current_color = last_bar['hma_color']
-        current_price = last_bar['close']
-        current_volume_idr = last_bar['volume'] * current_price
         
+        # Ambil harga asli riil dari Indodax khusus untuk eksekusi trade & filter volume rupiah
+        indodax_price = get_live_market_price(pair)
+        if indodax_price is None: indodax_price = last_bar['close']
+        
+        current_volume_idr = last_bar['volume'] * indodax_price
+        
+        # Kita lewati saringan volume jika perputaran uang global melimpah
         if current_volume_idr < min_vol: 
             log_summary.append(f"{pair}: Skip (Volume Rendah)")
             continue
@@ -218,27 +226,27 @@ def run_autonomous_engine():
             res = execute_indodax_trade(pair, "buy", MODAL_PER_TRANSAKSI_IDR)
             if res.get("success") == 1:
                 return_receive = float(res['return'].get('receive_coin', 0.0))
-                coin_bought = return_receive if return_receive > 0 else (MODAL_PER_TRANSAKSI_IDR / current_price)
+                coin_bought = return_receive if return_receive > 0 else (MODAL_PER_TRANSAKSI_IDR / indodax_price)
                 cursor.execute("""
                     INSERT OR REPLACE INTO trades (pair, last_signal, entry_price, timestamp, holding_amount) 
                     VALUES (?, 'BUY', ?, ?, ?)
-                """, (pair, current_price, now_str, coin_bought))
-                cursor.execute("INSERT INTO history (pair, type, price, status, timestamp) VALUES (?, 'BUY', ?, 'SUCCESS', ?)", (pair, current_price, now_str))
+                """, (pair, indodax_price, now_str, coin_bought))
+                cursor.execute("INSERT INTO history (pair, type, price, status, timestamp) VALUES (?, 'BUY', ?, 'SUCCESS', ?)", (pair, indodax_price, now_str))
                 db_conn.commit()
-                add_log_message(f"🚀 EKSEKUSI BUY SUKSES: {pair} di harga Rp {current_price:,.0f}")
+                add_log_message(f"🚀 EKSEKUSI BUY SUKSES: {pair} di harga Rp {indodax_price:,.0f}")
                 saldo_saat_ini -= MODAL_PER_TRANSAKSI_IDR
                 
         elif current_color == 'Red' and last_signal == 'BUY':
-            coin_to_sell = holding_amount if holding_amount > 0 else (MODAL_PER_TRANSAKSI_IDR / current_price)
+            coin_to_sell = holding_amount if holding_amount > 0 else (MODAL_PER_TRANSAKSI_IDR / indodax_price)
             res = execute_indodax_trade(pair, "sell", coin_to_sell)
             if res.get("success") == 1:
                 cursor.execute("""
                     INSERT OR REPLACE INTO trades (pair, last_signal, entry_price, timestamp, holding_amount) 
                     VALUES (?, 'SELL', ?, ?, 0.0)
-                """, (pair, current_price, now_str))
-                cursor.execute("INSERT INTO history (pair, type, price, status, timestamp) VALUES (?, 'SELL', ?, 'SUCCESS', ?)", (pair, current_price, now_str))
+                """, (pair, indodax_price, now_str))
+                cursor.execute("INSERT INTO history (pair, type, price, status, timestamp) VALUES (?, 'SELL', ?, 'SUCCESS', ?)", (pair, indodax_price, now_str))
                 db_conn.commit()
-                add_log_message(f"📉 EKSEKUSI SELL SUKSES: {pair} di harga Rp {current_price:,.0f}")
+                add_log_message(f"📉 EKSEKUSI SELL SUKSES: {pair} di harga Rp {indodax_price:,.0f}")
 
     add_log_message("Pemindaian Pasar Sukses | " + " | ".join(log_summary))
 
