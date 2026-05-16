@@ -6,10 +6,10 @@ import sqlite3
 from datetime import datetime
 
 # Konfigurasi Tampilan Layar HP
-st.set_page_config(page_title="Indodax Auto Trade Bot Ultimate", layout="centered")
+st.set_page_config(page_title="Indodax Auto Trade Bot Persistent", layout="centered")
 
 # =========================================================
-# MENYIMPAN DATA AGAR TIDAK HILANG SAAT REFRESH
+# MENYIMPAN DATA AGAR TETAP TERKUNCI & TIDAK RESET SAAT REFRESH
 # =========================================================
 if "api_key" not in st.session_state: st.session_state.api_key = ""
 if "secret_key" not in st.session_state: st.session_state.secret_key = ""
@@ -24,9 +24,13 @@ if "sim_balance" not in st.session_state: st.session_state.sim_balance = 1000000
 if "last_signal" not in st.session_state: st.session_state.last_signal = 0
 if "refresh_rate" not in st.session_state: st.session_state.refresh_rate = 5
 
-# ==========================================
-# MANAJEMEN DATABASE SQLITE
-# ==========================================
+# Fungsi Callback untuk Mengunci Perubahan Komponen Instan
+def update_state(key, val_key):
+    st.session_state[key] = st.session_state[val_key]
+
+# =========================================================
+# DATABASE FISIK (TETAP TERSIMPAN AMAN)
+# =========================================================
 def init_db():
     conn = sqlite3.connect('trading_bot.db')
     cursor = conn.cursor()
@@ -74,7 +78,6 @@ def clear_db():
     conn.commit()
     conn.close()
 
-# Pastikan database siap dari awal
 init_db()
 
 # ==========================================
@@ -83,18 +86,23 @@ init_db()
 st.sidebar.title("⚙️ Kendali Otomatis Bot")
 
 st.sidebar.subheader("🔑 Kredensial Akun Indodax")
-api_input = st.sidebar.text_input("API Key", type="password", value=st.session_state.api_key)
-secret_input = st.sidebar.text_input("Secret Key", type="password", value=st.session_state.secret_key)
-
-if api_input != st.session_state.api_key: st.session_state.api_key = api_input
-if secret_input != st.session_state.secret_key: st.session_state.secret_key = secret_input
+st.session_state.api_key = st.sidebar.text_input("API Key", type="password", value=st.session_state.api_key)
+st.session_state.secret_key = st.sidebar.text_input("Secret Key", type="password", value=st.session_state.secret_key)
 
 if not st.session_state.api_key or not st.session_state.secret_key:
     st.sidebar.subheader("🎮 Pengaturan Simulasi")
-    st.session_state.sim_balance = st.sidebar.number_input("Modal Awal Simulasi (IDR)", min_value=10000.0, value=st.session_state.sim_balance, step=500000.0)
+    st.session_state.sim_balance = st.sidebar.number_input(
+        "Modal Awal Simulasi (IDR)", min_value=10000.0, 
+        value=st.session_state.sim_balance, step=500000.0,
+        key="sb_sim", on_change=update_state, args=("sim_balance", "sb_sim")
+    )
 
 st.sidebar.subheader("💰 Jumlah Perdagangan")
-st.session_state.order_idr = st.sidebar.number_input("Jumlah Beli Per Sinyal (IDR)", min_value=10000.0, value=st.session_state.order_idr, step=5000.0)
+st.session_state.order_idr = st.sidebar.number_input(
+    "Jumlah Beli Per Sinyal (IDR)", min_value=10000.0, 
+    value=st.session_state.order_idr, step=5000.0,
+    key="sb_order", on_change=update_state, args=("order_idr", "sb_order")
+)
 
 st.sidebar.subheader("📈 Parameter Indikator")
 symbol_options = ["BTC/IDR", "ETH/IDR", "USDT/IDR"]
@@ -105,24 +113,43 @@ tf_options = ["1d", "4h", "1h", "15m"]
 idx_tf = tf_options.index(st.session_state.timeframe) if st.session_state.timeframe in tf_options else 0
 st.session_state.timeframe = st.sidebar.selectbox("Timeframe", tf_options, index=idx_tf)
 
-st.session_state.hma_length = st.sidebar.number_input("Panjang HMA", min_value=1, max_value=100, value=st.session_state.hma_length)
-st.session_state.max_bars = st.sidebar.slider("Pembatasan Bar", min_value=10, max_value=500, value=st.session_state.max_bars)
+st.session_state.hma_length = st.sidebar.number_input(
+    "Panjang HMA", min_value=1, max_value=100, 
+    value=st.session_state.hma_length,
+    key="sb_hma", on_change=update_state, args=("hma_length", "sb_hma")
+)
+st.session_state.max_bars = st.sidebar.slider(
+    "Pembatasan Bar", min_value=10, max_value=500, 
+    value=st.session_state.max_bars,
+    key="sb_bars", on_change=update_state, args=("max_bars", "sb_bars")
+)
 
 st.sidebar.subheader("🛡️ Pembatasan Profit & Rugi")
-st.session_state.tp_pct = st.sidebar.number_input("Pelebaran Profit / TP (%)", min_value=0.1, value=st.session_state.tp_pct)
-st.session_state.sl_pct = st.sidebar.number_input("Stop Loss / SL (%)", min_value=0.1, value=st.session_state.sl_pct)
+st.session_state.tp_pct = st.sidebar.number_input(
+    "Pelebaran Profit / TP (%)", min_value=0.1, 
+    value=st.session_state.tp_pct,
+    key="sb_tp", on_change=update_state, args=("tp_pct", "sb_tp")
+)
+st.session_state.sl_pct = st.sidebar.number_input(
+    "Stop Loss / SL (%)", min_value=0.1, 
+    value=st.session_state.sl_pct,
+    key="sb_sl", on_change=update_state, args=("sl_pct", "sb_sl")
+)
 
-# ─── BARU: PENGATURAN KENDALIAN SISTEM DI SIDEBAR ───
-st.sidebar.subheader("⏱️ Sinkronisasi & Pembersihan")
-st.session_state.refresh_rate = st.sidebar.slider("Jeda Auto-Refresh (Detik)", min_value=1, max_value=60, value=st.session_state.refresh_rate)
+st.sidebar.subheader("⏱️ Sinkronisasi")
+st.session_state.refresh_rate = st.sidebar.slider(
+    "Jeda Auto-Refresh (Detik)", min_value=1, max_value=60, 
+    value=st.session_state.refresh_rate,
+    key="sb_ref", on_change=update_state, args=("refresh_rate", "sb_ref")
+)
 
 if st.sidebar.button("🗑️ Hapus Semua Riwayat Tabel", type="primary", use_container_width=True):
     clear_db()
-    st.session_state.last_signal = 0  # Reset pengunci sinyal
-    st.sidebar.success("Database berhasil dikosongkan!")
+    st.session_state.last_signal = 0  
+    st.sidebar.success("Database dibersihkan!")
     st.rerun()
 
-# Inisialisasi Bursa
+# Inisialisasi Bursa Indodax
 def init_exchange(api, secret):
     if api and secret:
         return ccxt.indodax({'apiKey': api, 'secret': secret, 'enableRateLimit': True})
@@ -149,7 +176,7 @@ def calculate_hma(df, length):
 # ==========================================
 # KOMPONEN REFRESH DAN EKSEKUSI UTAMA
 # ==========================================
-@st.fragment(run_every=st.session_state.refresh_rate) # Nilai waktu mengikuti slider dinamis
+@st.fragment(run_every=st.session_state.refresh_rate)
 def market_monitor_fragment():
     waktu_sekarang = datetime.now().strftime('%H:%M:%S')
     st.caption(f"🔄 Sinkronisasi Indodax (Setiap {st.session_state.refresh_rate} Detik): {waktu_sekarang}")
@@ -262,4 +289,4 @@ history_df = get_trade_history(filter_pilihan)
 if not history_df.empty:
     st.dataframe(history_df.head(15), use_container_width=True)
 else:
-    st.info("Tidak ada data transaksi yang sesuai dengan saringan pilihan.")
+    st.info("Tabel kosong. Menunggu sinyal otomatis berjalan.")
