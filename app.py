@@ -68,19 +68,19 @@ def add_log_message(message):
         pass
 
 # =====================================================================
-# 3. PENARIK DATA GRAFIK JALUR GLOBAL BINANCE (100% BEBAS BUG LIST STRING)
+# 3. PENARIK DATA GRAFIK JALUR GLOBAL BINANCE (100% BEBAS BUG STRING)
 # =====================================================================
 def get_indodax_candles_4h(pair):
-    """Mengambil riwayat lilin 4 jam lewat API Global Binance tanpa bug array"""
+    """Mengambil riwayat lilin 4 jam lewat API Global Binance tanpa bug list string"""
     try:
-        # PERBAIKAN MUTLAK: Mengambil karakter koin depan saja menggunakan indeks [0]
-        coin_symbol = str(pair.split("/")[0]).upper()
+        # PERBAIKAN RADIKAL: Memotong teks menggunakan .replace() untuk menjamin hasil berupa kata murni
+        clean_coin = pair.upper().replace("/IDR", "")
         
         # Penyesuaian khusus jika pair yang dipindai adalah USDT/IDR
-        if coin_symbol == "USDT":
-            binance_symbol = "BUSDUSDT"  # Pasangan stabil di Binance
+        if clean_coin == "USDT":
+            binance_symbol = "BUSDUSDT"  # Pasangan stabil patokan di Binance
         else:
-            binance_symbol = f"{coin_symbol}USDT"
+            binance_symbol = f"{clean_coin}USDT"
             
         url = "https://binance.com"
         params = {
