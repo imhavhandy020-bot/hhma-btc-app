@@ -22,7 +22,7 @@ MODAL_PER_TRANSAKSI_IDR = 50000.0  # nominal modal Rp 50.000 per transaksi BUY
 # 2. SISTEM MEMORI PERMANEN & DATABASE PROTECTION (ANTI-CRASH)
 # =====================================================================
 def init_db():
-    conn = sqlite3.connect('trading_bot.db', check_same_thread=False, timeout=10)
+    conn = sqlite3.connect('trading_bot.db', check_same_thread=False, timeout=15)
     cursor = conn.cursor()
     try:
         cursor.execute("SELECT pair, last_signal, entry_price, timestamp, holding_amount FROM trades LIMIT 1")
@@ -69,38 +69,41 @@ def add_log_message(message):
         pass
 
 # =====================================================================
-# 3. PENARIK DATA GRAFIK JALUR BINANCE GLOBAL (KOREKSI SIMBOL INTERNASIONAL)
+# 3. PENARIK DATA GRAFIK JALUR UTAMA INDODAX TRADINGVIEW (KEBAL BLOKIR)
 # =====================================================================
 def get_indodax_candles_4h(pair):
-    """Mengubah pair Indodax ke Simbol USDT Binance Internasional secara presisi"""
+    """Mengambil riwayat lilin 4 jam langsung dari server Chart TradingView Indodax"""
     try:
-        # PENGUBAHAN SIMBOL INTERNASIONAL: Memotong '/IDR' dan menggantinya dengan 'USDT' murni string
-        # Contoh: 'BTC/IDR' otomatis berubah menjadi 'BTCUSDT' (Valid untuk server Binance)
-        if "USDT/IDR" in pair.upper():
-            binance_symbol = "USDCUSDT"  # Acuan grafik kestabilan mata uang dollar di Binance
-        else:
-            binance_symbol = pair.upper().replace("/IDR", "USDT")
-            
-        url = "https://binance.com"
-        params = {'symbol': binance_symbol, 'interval': '4h', 'limit': 50}
+        # Mengubah format ke string gabungan kecil sesuai standard URL Indodax (e.g., 'btcidr')
+        clean_pair = pair.lower().replace("/", "")
+        url = "https://indodax.com"
         
-        response = requests.get(url, params=params, timeout=5)
+        end_time = int(time.time())
+        start_time = end_time - (120 * 4 * 3600)  # Mengambil 120 bar ke belakang
+        
+        params = {
+            'symbol': clean_pair.upper(),
+            'resolution': '240',  # '240' menit = Kunci Mati Timeframe 4 Jam
+            'from': start_time,
+            'to': end_time
+        }
+        
+        response = requests.get(url, params=params, timeout=8)
         data = response.json()
         
-        if isinstance(data, list) and len(data) > 20:
-            df_raw = pd.DataFrame(data)
-            df_cleaned = pd.DataFrame()
-            # Pemetaan nomor urut kolom kline Binance: 0=Waktu, 1=Open, 2=High, 3=Low, 4=Close, 5=Volume
-            df_cleaned['timestamp'] = pd.to_datetime(df_raw[0], unit='ms')
-            df_cleaned['open'] = df_raw[1].astype(float)
-            df_cleaned['high'] = df_raw[2].astype(float)
-            df_cleaned['low'] = df_raw[3].astype(float)
-            df_cleaned['close'] = df_raw[4].astype(float)  # Penutup harga untuk rumus HMA-20
-            df_cleaned['volume'] = df_raw[5].astype(float) # Volume perputaran pasar
+        if data.get('s') == 'ok':
+            # Mengurai susunan data TradingView asli bursa Indodax
+            df_cleaned = pd.DataFrame({
+                'timestamp': pd.to_datetime(data['t'], unit='s'),
+                'open': pd.Series(data['o']).astype(float),
+                'high': pd.Series(data['h']).astype(float),
+                'low': pd.Series(data['l']).astype(float),
+                'close': pd.Series(data['c']).astype(float),
+                'volume': pd.Series(data['v']).astype(float)
+            })
             return df_cleaned
-            
         return pd.DataFrame()
-    except:
+    except Exception as e:
         return pd.DataFrame()
 
 # =====================================================================
@@ -132,7 +135,7 @@ def get_live_market_price(pair):
     clean_pair = pair.lower().replace("/", "_")
     url = f"https://indodax.com{clean_pair}"
     try:
-        res = requests.get(url, timeout=2).json()
+        res = requests.get(url, timeout=3).json()
         return float(res['ticker']['last'])
     except:
         return None
@@ -145,7 +148,7 @@ def get_indodax_balance():
     signature = hmac.new(bytes(SECRET_KEY, 'utf-8'), msg=bytes(query_string, 'utf-8'), digestmod=hashlib.sha512).hexdigest()
     headers = {"Key": API_KEY, "Sign": signature}
     try:
-        res = requests.post(url, data=payload, headers=headers, timeout=3).json()
+        res = requests.post(url, data=payload, headers=headers, timeout=4).json()
         if res.get('success') == 1 or res.get('success') == '1':
             return float(res['return']['balance']['idr'])
     except:
@@ -166,13 +169,13 @@ def execute_indodax_trade(pair, action, amount_or_coin):
     signature = hmac.new(bytes(SECRET_KEY, 'utf-8'), msg=bytes(query_string, 'utf-8'), digestmod=hashlib.sha512).hexdigest()
     headers = {"Key": API_KEY, "Sign": signature}
     try:
-        response = requests.post(url, data=payload, headers=headers, timeout=5)
+        response = requests.post(url, data=payload, headers=headers, timeout=6)
         return response.json()
     except:
         return {"success": 0, "error": "Timeout"}
 
 # =====================================================================
-# 5. ENGINE UTAMA: PEMINDAIAN MANDIRI PER KOIN INTERNASIONAL
+# 5. ENGINE UTAMA: PEMINDAIAN MANDIRI JALUR DOMESTIK INDODAX
 # =====================================================================
 def run_autonomous_engine():
     cursor = db_conn.cursor()
@@ -187,15 +190,16 @@ def run_autonomous_engine():
     saldo_saat_ini = get_indodax_balance()
     
     for pair in LIST_PAIRS:
+        # Menarik data market asli buatan pasar Indodax (Bebas Reject Internasional)
         df = get_indodax_candles_4h(pair)
         
         if df.empty: 
-            add_log_message(f"🔍 {pair} | Status: ❌ API Binance Limit/Reject")
+            add_log_message(f"🔍 {pair} | Status: ❌ Data Bursa Kosong")
             continue
             
         df = calculate_hma_20(df)
         if 'hma_value' not in df.columns: 
-            add_log_message(f"🔍 {pair} | Status: ⚠️ Rumus Matematika Error")
+            add_log_message(f"🔍 {pair} | Status: ⚠️ Perhitungan Rumus Gagal")
             continue
         
         last_bar = df.iloc[-1]
@@ -205,14 +209,18 @@ def run_autonomous_engine():
         indodax_price = get_live_market_price(pair)
         if indodax_price is None: indodax_price = last_bar['close']
         
-        # Saringan volume menggunakan perputaran pasar Binance global
+        # Saringan volume langsung dari total perputaran Rupiah asli Indodax
         current_volume_idr = last_bar['volume'] * indodax_price
         
+        if current_volume_idr < min_vol: 
+            add_log_message(f"🔍 {pair} | Sinyal: {current_color} | Status: ⏩ Skip Vol Rendah")
+            continue
+            
         cursor.execute("SELECT last_signal, holding_amount FROM trades WHERE pair = ?", (pair,))
         row = cursor.fetchone()
         last_signal, holding_amount = row if row else ("NONE", 0.0)
         
-        # CETAK STATISTIK ASLI HP: Memunculkan arah tren warna asli koin detik ini
+        # CETAK DATA VALID: Log terpisah per koin memunculkan warna tren detik ini
         add_log_message(f"🔍 {pair} | Sinyal Tren: {current_color} | Posisi SQLite: {last_signal}")
         
         # LOGIKA BUY (OFFSET -1 TV)
@@ -307,8 +315,8 @@ col_w, col_s = st.columns(2)
 col_w.metric("Win Rate Bot", f"{win_rate:.1f}%")
 
 if last_run_display and " " in last_run_display:
-    waktu_saja = last_run_display.split(" ")[1]
-    col_s.metric("Server Terakhir Scan", str(waktu_saja))
+    waktu_saja = last_run_display.split(" ")
+    col_s.metric("Server Terakhir Scan", str(waktu_saja[1]))
 else:
     col_s.metric("Server Terakhir Scan", str(last_run_display))
 
@@ -346,8 +354,8 @@ if st.sidebar.button("💾 Terapkan Batas Risiko"):
     st.sidebar.success("Parameter risiko tersimpan ke Cloud!")
 
 # =====================================================================
-# INTERVAL RE-SCAN TINGGI CLOUD (5 DETIK)
+# JEDA KESELAMATAN ANTI-BAN BURSA INDODAX (60 DETIK / 1 MENIT)
 # =====================================================================
 run_autonomous_engine()
-time.sleep(5)
+time.sleep(60)  # Detak jantung kilat aman: Bot scan ulang setiap 1 menit sekali
 st.rerun()
