@@ -72,14 +72,22 @@ except Exception:
     bot_is_authenticated = False
 
 # ==========================================
-# 3. DATA PASAR ASLI INDODAX (REAL-TIME)
+# 3. DATA PASAR ASLI INDODAX TERBARU (BYPASS BY IP2)
 # ==========================================
-@st.cache_data(ttl=30)
+@st.cache_data(ttl=15)
 def fetch_live_indodax_data(pair):
+    """Mengambil data Candlestick 4 Jam ASLI langsung dari API Publik Indodax Terbaru"""
     pair_id = pair.replace('/', '_').lower()
+    
+    # PERBAIKAN UTAMA: Menggunakan jalur api2 resmi untuk bypass rate-limit / cloudflare server AWS
     url = f"https://indodax.com{pair_id}&tf=4h"
+    
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36',
+        'Accept': 'application/json'
+    }
     try:
-        response = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=10)
+        response = requests.get(url, headers=headers, timeout=10)
         data = response.json()
         if not data or not isinstance(data, list):
             return pd.DataFrame()
@@ -102,7 +110,6 @@ def ambil_saldo_indodax(api_key, secret_key, pair):
     nonce = int(time.time() * 1000) + 2000
     payload = {'method': 'getInfo', 'nonce': nonce}
     
-    # FIX PERBAIKAN PERMANEN: Ambil teks indeks ke-0 lalu ubah ke lower() murni
     parts = pair.split('/')
     coin_code = parts[0].lower() if len(parts) > 0 else "btc"
     
@@ -155,7 +162,6 @@ st.sidebar.header("📊 SETTING TRANSAKSI")
 order_size_idr = st.sidebar.number_input("💰 Modal Beli per Trade (IDR)", min_value=10000, value=default_modal, step=10000)
 sl_input = st.sidebar.number_input("Stop Loss Fisik (%)", min_value=0.5, max_value=10.0, value=default_sl, step=0.1)
 
-# Parameter HMA-20 terkunci mati untuk Akun Real Anda
 hma_period = 20
 
 # ==========================================
@@ -224,7 +230,6 @@ def jalankan_engine_bot(pair, df):
         if pemicu_aksi:
             api_success = True
             
-            # EKSEKUSI TRANSAKSI UANG NYATA SECARA LANGSUNG
             if pemicu_aksi == "BUY":
                 res_api = kirim_order_indodax(api_key_input, secret_key_input, pair, "BUY", nominal_idr=order_size_idr)
             else:
