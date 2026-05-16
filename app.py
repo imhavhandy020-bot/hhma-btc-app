@@ -51,6 +51,14 @@ def init_db():
         )
     """)
     
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS activity_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT,
+            message TEXT
+        )
+    """)
+    
     try:
         cursor.execute("SELECT last_run FROM settings LIMIT 1")
     except sqlite3.OperationalError:
@@ -68,6 +76,16 @@ def init_db():
     return conn
 
 db_conn = init_db()
+
+def add_log_message(message):
+    try:
+        cursor = db_conn.cursor()
+        now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        cursor.execute("INSERT INTO activity_logs (timestamp, message) VALUES (?, ?)", (now_str, message))
+        cursor.execute("DELETE FROM activity_logs WHERE id NOT IN (SELECT id FROM activity_logs ORDER BY id DESC LIMIT 20)")
+        db_conn.commit()
+    except:
+        pass
 
 # =====================================================================
 # 3. PENARIK DATA CHART & HITUNG INDIKATOR HMA-20 (ANTI-LAG)
@@ -105,9 +123,6 @@ def calculate_hma_20(df):
     df['hma_color'] = np.where(df['hma_20'] > df['hma_20'].shift(1), 'Green', 'Red')
     return df
 
-# =====================================================================
-# INTERFACES: AMBIL HARGA LIVE TICKER (UNTUK HITUNG PROFIT RUNNING)
-# =====================================================================
 def get_live_market_price(pair):
     clean_pair = pair.lower().replace("/", "_")
     url = f"https://indodax.com{clean_pair}"
@@ -154,9 +169,13 @@ def run_autonomous_engine():
     cursor.execute("UPDATE settings SET last_run = ?", (now_str,))
     db_conn.commit()
     
+    log_summary = []
+    
     for pair in LIST_PAIRS:
         df = get_indodax_candles_4h(pair)
-        if df.empty: continue
+        if df.empty: 
+            log_summary.append(f"{pair}: Gagal ambil chart")
+            continue
             
         df = calculate_hma_20(df)
         if 'hma_color' not in df.columns: continue
@@ -166,11 +185,15 @@ def run_autonomous_engine():
         current_price = last_bar['close']
         current_volume_idr = last_bar['volume'] * current_price
         
-        if current_volume_idr < min_vol: continue
+        if current_volume_idr < min_vol: 
+            log_summary.append(f"{pair}: Skip (Volume Rendah)")
+            continue
             
         cursor.execute("SELECT last_signal, holding_amount FROM trades WHERE pair = ?", (pair,))
         row = cursor.fetchone()
         last_signal, holding_amount = row if row else ("NONE", 0.0)
+        
+        log_summary.append(f"{pair}: Tren {current_color} (Posisi: {last_signal})")
         
         if current_color == 'Green' and last_signal != 'BUY':
             res = execute_indodax_trade(pair, "buy", MODAL_PER_TRANSAKSI_IDR)
@@ -183,6 +206,7 @@ def run_autonomous_engine():
                 """, (pair, current_price, now_str, coin_bought))
                 cursor.execute("INSERT INTO history (pair, type, price, status, timestamp) VALUES (?, 'BUY', ?, 'SUCCESS', ?)", (pair, current_price, now_str))
                 db_conn.commit()
+                add_log_message(f"🚀 EKSEKUSI BUY SUKSES: {pair} di harga Rp {current_price:,.0f}")
                 
         elif current_color == 'Red' and last_signal == 'BUY':
             coin_to_sell = holding_amount if holding_amount > 0 else (MODAL_PER_TRANSAKSI_IDR / current_price)
@@ -194,6 +218,9 @@ def run_autonomous_engine():
                 """, (pair, current_price, now_str))
                 cursor.execute("INSERT INTO history (pair, type, price, status, timestamp) VALUES (?, 'SELL', ?, 'SUCCESS', ?)", (pair, current_price, now_str))
                 db_conn.commit()
+                add_log_message(f"📉 EKSEKUSI SELL SUKSES: {pair} di harga Rp {current_price:,.0f}")
+
+    add_log_message(" | ".join(log_summary))
 
 # =====================================================================
 # 6. LAYAR UTAMA DASHBOARD MONITOR (RESPONSIVE CHROME HP)
@@ -201,13 +228,11 @@ def run_autonomous_engine():
 cursor = db_conn.cursor()
 cursor.execute("SELECT COUNT(*) FROM history WHERE type='SELL' AND status='SUCCESS'")
 total_win_row = cursor.fetchone()
-# AMBIL INDEKS 0 AGAR BERUPA ANGKA, BUKAN TUPLE
-total_win = total_win_row[0] if total_win_row else 0
+total_win = total_win_row if total_win_row else 0
 
 cursor.execute("SELECT COUNT(*) FROM history WHERE status='SUCCESS'")
 total_trades_row = cursor.fetchone()
-# AMBIL INDEKS 0 AGAR BERUPA ANGKA, BUKAN TUPLE
-total_trades = total_trades_row[0] if total_trades_row else 0
+total_trades = total_trades_row if total_trades_row else 0
 
 if total_trades > 1 and total_win > 0:
     win_rate = (total_win / (total_trades / 2)) * 100
@@ -216,63 +241,89 @@ else:
 
 cursor.execute("SELECT last_run FROM settings LIMIT 1")
 last_run_time = cursor.fetchone()
-last_run_display = last_run_time[0] if last_run_time and last_run_time[0] else "Belum Berjalan"
+last_run_display = last_run_time if last_run_time and last_run_time else "Belum Berjalan"
 
 st.markdown("### 🛡️ Indodax Multi-Pair Pro Server")
 col1, col2 = st.columns(2)
 col1.metric("Win Rate Bot", f"{win_rate:.1f}%")
 
 if last_run_display and " " in last_run_display:
-    waktu_saja = last_run_display.split(" ")[1]  # Mengambil String Jam
+    waktu_saja = last_run_display.split(" ")
     col2.metric("Server Terakhir Scan", str(waktu_saja))
 else:
     col2.metric("Server Terakhir Scan", str(last_run_display))
 
 # =====================================================================
-# MODUL LIVE PROFIT: TABEL RUNNING TRADES (AMAN TOTAL)
+# MODUL LIVE PROFIT: MENAMPILKAN SEMUA 5 ASET PERMANEN
 # =====================================================================
-st.markdown("#### 📋 Running Trades (Status Posisi)")
+st.markdown("#### 📋 Status Posisi Semua Aset Aktif")
 try:
-    df_raw = pd.read_sql_query("""
-        SELECT pair, entry_price, holding_amount, timestamp 
-        FROM trades WHERE last_signal='BUY'
-    """, db_conn)
-
-    if df_raw.empty:
-        st.write("💡 *Semua aset sedang clean (posisi kosong/terjual).*")
-    else:
-        live_data = []
-        for index, row in df_raw.iterrows():
-            pair = row['pair']
-            entry_price = float(row['entry_price'])
-            holding_amount = float(row['holding_amount'])
-            waktu = row['timestamp']
+    live_data = []
+    
+    for pair in LIST_PAIRS:
+        # Cari riwayat posisi koin ini di SQLite
+        cursor.execute("SELECT last_signal, entry_price, holding_amount FROM trades WHERE pair = ?", (pair,))
+        row = cursor.fetchone()
+        
+        # Ambil harga live saat ini dari ticker pasar Indodax
+        live_price = get_live_market_price(pair)
+        
+        if row and row == 'BUY':
+            # JIKA SEDANG PUNYA POSISI AKTIF (ADA SALDO BELI)
+            entry_price = float(row)
+            holding_amount = float(row)
+            posisi = "🛒 BUYING"
             
-            live_price = get_live_market_price(pair)
-            if live_price is None:
-                live_price = entry_price
-                
+            if live_price is None: live_price = entry_price
+            
             profit_pct = ((live_price - entry_price) / entry_price) * 100
             current_value_idr = holding_amount * live_price
             initial_value_idr = holding_amount * entry_price
             profit_idr = current_value_idr - initial_value_idr
-            
             sign = "+" if profit_idr >= 0 else ""
             
-            live_data.append({
-                "Pair": pair,
-                "Harga Masuk": f"Rp {entry_price:,.0f}",
-                "Harga Live": f"Rp {live_price:,.0f}",
-                "Saldo Koin": f"{holding_amount:.6f}",
-                "Live Profit (IDR / %)": f"{sign}Rp {profit_idr:,.0f} ({sign}{profit_pct:.2f}%)",
-                "Waktu Beli": waktu
-            })
+            profit_display = f"{sign}Rp {profit_idr:,.0f} ({sign}{profit_pct:.2f}%)"
+            saldo_idr_display = f"Rp {current_value_idr:,.0f}"
+            saldo_coin_display = f"{holding_amount:.6f}"
+            entry_display = f"Rp {entry_price:,.0f}"
+        else:
+            # JIKA POSISI SEDANG KOSONG (SUDAH TERJUAL / CLEAN)
+            posisi = "💤 CLEAN"
+            if live_price is None: live_price = 0.0
             
-        df_display = pd.DataFrame(live_data)
-        st.dataframe(df_display, use_container_width=True, hide_index=True)
+            entry_display = "-"
+            saldo_coin_display = "0.000000"
+            saldo_idr_display = "Rp 0"
+            profit_display = "Rp 0 (0.00%)"
+            
+        live_data.append({
+            "Pair Aset": pair,
+            "Status": posisi,
+            "Harga Masuk": entry_display,
+            "Harga Live": f"Rp {live_price:,.0f}" if live_price > 0 else "Delay API",
+            "Saldo Koin": saldo_coin_display,
+            "Valuasi (IDR)": saldo_idr_display,
+            "Live Floating Profit": profit_display
+        })
         
-except Exception as e:
-    st.write("🔄 *Sedang menghitung live profit saldo di server...*")
+    df_display = pd.DataFrame(live_data)
+    st.dataframe(df_display, use_container_width=True, hide_index=True)
+        
+except Exception as database_error:
+    st.write("🔄 *Sedang mengalkulasi tabel komparasi semua aset...*")
+
+# =====================================================================
+# MODUL: TABEL LOG AKTIVITAS PEMINDAIAN (BAWAH SCREEN HP)
+# =====================================================================
+st.markdown("#### 📜 Log Aktivitas Server Cloud (20 Terakhir)")
+try:
+    df_logs = pd.read_sql_query("SELECT timestamp as 'Waktu', message as 'Catatan Aktivitas' FROM activity_logs ORDER BY id DESC LIMIT 20", db_conn)
+    if df_logs.empty:
+        st.write("⏳ *Menunggu rekaman scan perdana...*")
+    else:
+        st.dataframe(df_logs, use_container_width=True, hide_index=True)
+except:
+    st.write("🔄 *Gagal memuat log aktivitas.*")
 
 # 7. CONTROL PANEL SIDEBAR HP
 st.sidebar.header("⚙️ Manajemen Risiko")
