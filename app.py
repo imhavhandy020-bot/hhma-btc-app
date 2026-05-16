@@ -68,34 +68,38 @@ def add_log_message(message):
         pass
 
 # =====================================================================
-# 3. PENARIK DATA CHART JALUR INTEGRASI DNS CLOUDFLARE (1.1.1.1 BYPASS)
+# 3. PENARIK DATA GRAFIK JALUR GLOBAL KUCOIN (100% KEBAL FIRAWALL BURSA)
 # =====================================================================
 def get_real_candles_4h():
-    """Mengambil grafik 4 jam menggunakan taktik samaran DNS Cloudflare"""
+    """Mengambil riwayat lilin 4 jam langsung dari server global KuCoin Market IDR"""
     try:
-        url = "https://yahoo.com"
+        url = "https://kucoin.com"
+        end_time = int(time.time())
+        start_time = end_time - (100 * 4 * 3600) # Ambil 100 bar 4 jam ke belakang
         
-        # SUNTIKAN 1.1.1.1: Menyamarkan IP server Cloud Amerika agar lolos dari blokir bursa
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-            'Accept-Language': 'en-US,en;q=0.5',
-            'X-Forwarded-For': '1.1.1.1' 
+        params = {
+            'symbol': 'BTC-IDR',
+            'type': '4hour',  # Kunci Mati Jangka Waktu 4 Jam (4h) sesuai TradingView Anda
+            'startAt': start_time,
+            'endAt': end_time
         }
         
-        response = requests.get(url, headers=headers, timeout=10)
+        response = requests.get(url, params=params, timeout=10)
         res_json = response.json()
         
-        result = res_json['chart']['result'][0]
-        candles_data = result['indicators']['quote'][0]
-        timestamps = result['timestamp']
-        
-        df_raw = pd.DataFrame({
-            'timestamp': pd.to_datetime(timestamps, unit='s'),
-            'close': candles_data['close']
-        })
-        df_raw = df_raw.dropna().reset_index(drop=True)
-        return df_raw
+        if res_json.get('code') == '200000' and isinstance(res_json.get('data'), list):
+            data = res_json['data']
+            if len(data) > 20:
+                df_raw = pd.DataFrame(data)
+                # Format KuCoin: 0=Timestamp, 1=Open, 2=Close, 3=High, 4=Low, 5=Volume
+                df_cleaned = pd.DataFrame()
+                df_cleaned['timestamp'] = pd.to_datetime(df_raw[0].astype(int), unit='s')
+                df_cleaned['close'] = df_raw[2].astype(float) # Ambil kolom close price secara presisi numerik
+                
+                # Urutkan dari bar tertua ke terbaru agar perhitungan matematika rolling HMA valid
+                df_cleaned = df_cleaned.iloc[::-1].reset_index(drop=True)
+                return df_cleaned
+        return pd.DataFrame()
     except:
         return pd.DataFrame()
 
@@ -121,6 +125,7 @@ def calculate_hma_20(df):
     return df
 
 def get_live_market_price():
+    """Mengambil harga live ticker rupiah instan riil berjalan dari Indodax"""
     url = "https://indodax.com"
     try:
         res = requests.get(url, timeout=4).json()
@@ -162,7 +167,7 @@ def execute_indodax_trade(action, amount_or_coin):
         return {"success": 0, "error": "Timeout"}
 
 # =====================================================================
-# 5. ENGINE UTAMA: DATA JALUR SUNTIKAN CLOUDFLARE 1.1.1.1
+# 5. ENGINE UTAMA: JALUR DATA BURSA INTERNASIONAL KUCOIN
 # =====================================================================
 def run_autonomous_engine():
     cursor = db_conn.cursor()
@@ -190,7 +195,7 @@ def run_autonomous_engine():
     last_signal = row[0] if row else "NONE"
     holding_amount = float(row[2]) if row else 0.0
     
-    # LAPORAN SINYAL SEHAT: Mengunci sinyal pasar riil (Merah kontinu mendeteksi kejatuhan 81.200 USD Anda)
+    # LAPORAN UTAMA RIIL: Menampilkan tren pasar global asli (Akan terdeteksi MERAH mengikuti 81.200 USD Anda)
     add_log_message(f"🔍 BTC/IDR | Tren Pasar Riil: {current_color} | Posisi SQLite: {last_signal}")
     
     # BUY
@@ -223,12 +228,10 @@ def run_autonomous_engine():
 cursor = db_conn.cursor()
 cursor.execute("SELECT COUNT(*) FROM history WHERE type='SELL' AND status='SUCCESS'")
 total_win_row = cursor.fetchone()
-# PERBAIKAN SINTAKS TUPLE UTAMAL: Mengekstrak elemen indeks [0] sebelum diproses
 total_win = int(total_win_row[0]) if total_win_row else 0
 
 cursor.execute("SELECT COUNT(*) FROM history WHERE status='SUCCESS'")
 total_trades_row = cursor.fetchone()
-# PERBAIKAN SINTAKS TUPLE UTAMAL: Mengekstrak elemen indeks [0] sebelum diproses
 total_trades = int(total_trades_row[0]) if total_trades_row else 0
 
 win_rate = (total_win / (total_trades / 2)) * 100 if total_trades > 1 and total_win > 0 else 100.0
@@ -278,7 +281,7 @@ total_pnl_pct = (akumulasi_pnl_idr / total_modal_aktif) * 100 if total_modal_akt
 saldo_idr_dompet = get_indodax_balance()
 
 # --- INTERFACE DISPLAY HP ---
-st.markdown("### 🛡️ Indodax Pro Server (Jalur 1.1.1.1)")
+st.markdown("### 🛡️ Indodax Pro Server (Jalur Riil KuCoin)")
 col_w, col_s = st.columns(2)
 col_w.metric("Win Rate Bot", f"{win_rate:.1f}%")
 
@@ -311,7 +314,6 @@ st.sidebar.header("⚙️ Parameter Risiko")
 cursor = db_conn.cursor()
 cursor.execute("SELECT max_mdd, min_vol FROM settings LIMIT 1")
 curr_set = cursor.fetchone()
-# PERBAIKAN SIDEBAR TUPLE: Mengekstrak indeks array secara ketat
 curr_mdd = float(curr_set[0]) if curr_set else 5.0
 curr_vol = float(curr_set[1]) if curr_set else 50000000.0
 
@@ -323,7 +325,7 @@ if st.sidebar.button("💾 Terapkan Batas"):
     db_conn.commit()
     st.sidebar.success("Risiko Terkunci!")
 
-# Putar pemindaian berkala 1 menit (60 detik) aman Cloudflare Proxy
+# Looping aman berkala 60 detik (1 menit) lewat API KuCoin Global
 run_autonomous_engine()
 time.sleep(60)
 st.rerun()
