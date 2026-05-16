@@ -6,7 +6,7 @@ import sqlite3
 from datetime import datetime
 
 # Konfigurasi Tampilan Layar HP
-st.set_page_config(page_title="Indodax Bot Agresif 4H", layout="centered")
+st.set_page_config(page_title="Indodax Bot Ultimate Pro P&L", layout="centered")
 
 # =========================================================
 # MANAJEMEN DATABASE FISIK (PARAM & TRANSAKSI) - ANTI RESET
@@ -14,6 +14,7 @@ st.set_page_config(page_title="Indodax Bot Agresif 4H", layout="centered")
 def init_db():
     conn = sqlite3.connect('trading_bot.db')
     cursor = conn.cursor()
+    # 1. Tabel Riwayat Transaksi (Dipastikan Memiliki Kolom 'amount')
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS trades (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -27,6 +28,21 @@ def init_db():
             status TEXT
         )
     ''')
+    # SOLUSI OTOMATIS: Cek jika database lama belum ada kolom 'amount', tambahkan paksa
+    try:
+        cursor.execute("ALTER TABLE trades ADD COLUMN amount REAL")
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass # Kolom sudah ada, aman
+
+    # SOLUSI OTOMATIS: Cek jika database lama belum ada kolom 'highest_price', tambahkan paksa
+    try:
+        cursor.execute("ALTER TABLE trades ADD COLUMN highest_price REAL")
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass 
+
+    # 2. Tabel Pengaturan Permanen
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS settings (
             key TEXT PRIMARY KEY,
@@ -62,9 +78,9 @@ def get_setting(key, default_text=None, default_num=None):
 def get_trade_history(filter_type="Semua"):
     conn = sqlite3.connect('trading_bot.db')
     if filter_type == "Hanya Live Trading":
-        query = "SELECT * FROM trades WHERE status NOT LIKE 'SIMULASI%' ORDER BY id DESC"
+        query = "SELECT * FROM trades WHERE status NOT LIKE 'DEMO%' AND status NOT LIKE 'SIMULASI%' ORDER BY id DESC"
     elif filter_type == "Hanya Demo (Simulasi)":
-        query = "SELECT * FROM trades WHERE status LIKE 'SIMULASI%' ORDER BY id DESC"
+        query = "SELECT * FROM trades WHERE status LIKE 'DEMO%' OR status LIKE 'SIMULASI%' ORDER BY id DESC"
     else:
         query = "SELECT * FROM trades ORDER BY id DESC"
     df = pd.read_sql_query(query, conn)
@@ -95,6 +111,7 @@ def clear_db():
     conn.commit()
     conn.close()
 
+# Jalankan Inisialisasi Sistem Database
 init_db()
 
 # =========================================================
@@ -200,7 +217,7 @@ def market_monitor_fragment():
     st.caption(f"🔄 Sinkronisasi Indodax (Setiap {refresh_rate_input} Detik): {waktu_sekarang}")
     
     base_coin = symbol_input.split('/')
-    coin_name = base_coin[0]
+    coin_name = base_coin[0] # PERBAIKAN: Memastikan string 'BTC' tunggal
     saldo_idr_tersedia = 0.0
 
     if mode_input == "Live Trading Real" and api_input and secret_input:
@@ -208,9 +225,9 @@ def market_monitor_fragment():
             balance = exchange.fetch_balance()
             saldo_idr_tersedia = balance['free']['IDR'] if 'IDR' in balance['free'] else 0.0
             saldo_coin = balance['free'][coin_name] if coin_name in balance['free'] else 0.0
-            st.info(f"💳 **Dompet Akun Real Anda:**  \n💵 Saldo Rupiah: **Rp {saldo_idr_tersedia:,.0f}**  \n🪙 Sisa Koin ({coin_name}): **{saldo_coin:.6f} {coin_name}**")
+            st.info(f"💼 **Dompet Akun Real Anda:**  \n💵 Saldo Rupiah: **Rp {saldo_idr_tersedia:,.0f}**  \n🪙 Sisa Koin ({coin_name}): **{saldo_coin:.6f} {coin_name}**")
         except Exception as bal_err:
-            st.error(f"⚠️ Hubungan API Gagal: {bal_err}")
+            st.error(f"⚠️ Hubungan API Gagal (Gunakan Akun Demo jika API belum siap): {bal_err}")
     else:
         saldo_idr_tersedia = sim_balance_input
         st.info(f"🎮 **Dompet Kustom Simulasi (Demo):**  \n💵 Saldo Rupiah: **Rp {saldo_idr_tersedia:,.0f}**  \n🪙 Sisa Koin ({coin_name}): **0.000000 {coin_name}**")
@@ -220,7 +237,6 @@ def market_monitor_fragment():
         df = pd.DataFrame(bars, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
         df = calculate_hma(df, HMA_LENGTH)
         
-        # LOGIKA INSTAN: Membaca bar terdepan [-1] yang sedang berjalan aktif
         current_hma = df['hma'].iloc[-1]
         prev_hma = df['hma'].iloc[-2]
         prev_prev_hma = df['hma'].iloc[-3]
@@ -240,7 +256,7 @@ def market_monitor_fragment():
         else:
             col2.metric(label="Status Tren HHMA", value="MERAH (SELL ZONE)", delta="-Turun", delta_color="inverse")
             
-        # AMBIL DATA POSISI AKTIF
+        # AMBIL DATA POSISI AKTIF (RUNNING)
         history_conn = sqlite3.connect('trading_bot.db')
         target_status = 'LIVE_OPEN' if mode_input == "Live Trading Real" else 'DEMO_OPEN'
         active_trades = pd.read_sql_query(f"SELECT * FROM trades WHERE status='{target_status}'", history_conn)
@@ -306,7 +322,7 @@ def market_monitor_fragment():
         else:
             st.info("Tidak ada posisi yang sedang berjalan.")
 
-        # ─── SAKELAR EKSEKUSI UTAMA (ANTI BELI BERUNTUN) ───
+        # SAKELAR EKSEKUSI UTAMA (ANTI-REPAINT & ANTI BELI BERUNTUN)
         if raw_buy and st.session_state.last_signal != 1:
             nominal_belanja = min(order_idr_input, saldo_idr_tersedia)
             
@@ -330,7 +346,7 @@ def market_monitor_fragment():
                 
                 save_trade('BUY', current_close, amount_to_buy, tp, sl, current_close, status_order)
                 save_setting("last_signal", num_val=1.0)
-                st.session_state.last_signal = 1  # Kunci status agar tidak beli beruntun
+                st.session_state.last_signal = 1  
                 st.toast("🟩 INSTAN BUY BERHASIL!", icon="🛒")
                 st.rerun() 
             
@@ -350,7 +366,7 @@ def market_monitor_fragment():
             status_order = "LIVE_CLOSED" if mode_input == "Live Trading Real" else "DEMO_CLOSED"
             save_trade('SELL', current_close, amount_to_sell, tp, sl, current_close, status_order)
             save_setting("last_signal", num_val=-1.0)
-            st.session_state.last_signal = -1  # Kunci status ke mode Jual
+            st.session_state.last_signal = -1  
             st.toast("🟥 AUTOMATIC SELL BERHASIL!", icon="💰")
             st.rerun()
             
@@ -364,6 +380,49 @@ def market_monitor_fragment():
 # ==========================================
 st.title("🤖 Indodax Auto Trading Bot Pro")
 
+# ─── BARU: HITUNG TOTAL PROFIT, LOSS, DAN WIN RATE AKURASI SINYAL ───
+target_filter = "Hanya Live Trading" if mode_input == "Live Trading Real" else "Hanya Demo (Simulasi)"
+history_df = get_trade_history(target_filter)
+
+# Cari transaksi yang statusnya sudah Selesai (Closed)
+closed_trades = history_df[history_df['status'].str.contains('CLOSED|LOCK|LOSS', na=False)].copy()
+total_closed = len(closed_trades)
+
+# Inisialisasi variabel statistik awal
+total_profit_idr = 0.0
+total_profit_pct = 0.0
+win_rate = 0.0
+
+if total_closed > 0:
+    # Transaksi dianggap WIN (Untung) jika ditutup oleh pengunci profit
+    win_trades = len(closed_trades[closed_trades['status'].str.contains('LOCK', na=False)])
+    win_rate = (win_trades / total_closed) * 100
+    
+    # Ambil data transaksi BUY pasangannya untuk kalkulasi untung bersih Rupiah
+    all_buys = history_df[history_df['signal_type'] == 'BUY']
+    
+    for idx, row_closed in closed_trades.iterrows():
+        # Cari harga beli asal berdasarkan baris data di atasnya atau kecocokan amount koin
+        match_buy = all_buys[all_buys['id'] > row_closed['id']].head(1)
+        if not match_buy.empty:
+            harga_beli = match_buy['price'].values[0]
+            harga_jual = row_closed['price']
+            banyak_koin = row_closed['amount']
+            
+            # Hitung selisih uang Rupiah (IDR)
+            profit_idr = (harga_jual - harga_beli) * banyak_koin
+            profit_pct = ((harga_jual - harga_beli) / harga_beli) * 100
+            
+            total_profit_idr += profit_idr
+            total_profit_pct += profit_pct
+
+# Memunculkan Kartu Informasi Utama di atas monitor trading HP
+col_p1, col_p2, col_p3 = st.columns(3)
+col_p1.metric(label="🎯 Akurasi Sinyal (Win Rate)", value=f"{win_rate:.1f} %")
+col_p2.metric(label="💰 Profit Bersih (IDR)", value=f"Rp {total_profit_idr:,.0f}", delta=f"{total_profit_pct:.2f}%" if total_profit_idr >= 0 else f"{total_profit_pct:.2f}%", delta_color="normal" if total_profit_idr >= 0 else "inverse")
+col_p3.metric(label="📦 Total Trade Selesai", value=f"{total_closed} Kali")
+
+# Penanda Status Mode Aktif
 if mode_input == "Live Trading Real":
     st.success("💼 AKUN LIVE TRADING REAL AKTIF (Menggunakan Saldo Asli Indodax)")
 else:
