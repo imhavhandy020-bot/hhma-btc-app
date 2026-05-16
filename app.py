@@ -11,16 +11,11 @@ from datetime import datetime
 # =====================================================================
 # 1. KONFIGURASI UTAMA & API KEYS (INTEGRASI INDODAX)
 # =====================================================================
-# Disarankan menggunakan Streamlit Secrets untuk keamanan API Key Anda
 API_KEY = st.secrets.get("INDODAX_API_KEY", "ISI_API_KEY_RIIL_ANDA")
 SECRET_KEY = st.secrets.get("INDODAX_SECRET_KEY", "ISI_SECRET_KEY_RIIL_ANDA")
 
-# Daftar Pair Aktif sesuai Rangka Dasar Anda
 LIST_PAIRS = ['BTC/IDR', 'ETH/IDR', 'USDT/IDR', 'SOL/IDR', 'DOGE/IDR']
-
-# Alokasi Modal Tetap untuk Pembelian Pasar (Market Order IDR)
-# Indodax mewajibkan Market Buy diisi dengan jumlah nominal Rupiah (IDR)
-MODAL_PER_TRANSAKSI_IDR = 50000.0  # Contoh: Rp 50.000 per eksekusi BUY
+MODAL_PER_TRANSAKSI_IDR = 50000.0  # Rp 50.000 per eksekusi BUY
 
 # =====================================================================
 # 2. SISTEM MEMORI PERMANEN & MIGRASI DATABASE (ANTI-CRASH)
@@ -36,11 +31,12 @@ def init_db():
             pair TEXT PRIMARY KEY, 
             last_signal TEXT, 
             entry_price REAL, 
-            timestamp TEXT
+            timestamp TEXT,
+            holding_amount REAL DEFAULT 0.0
         )
     """)
     
-    # B. PROTEKSI ERROR: Migrasi otomatis jika kolom 'holding_amount' belum ada
+    # B. PROTEKSI ERROR: Migrasi jika kolom 'holding_amount' belum ada di db lama
     try:
         cursor.execute("SELECT holding_amount FROM trades LIMIT 1")
     except sqlite3.OperationalError:
@@ -120,7 +116,6 @@ def calculate_hma_20(df):
     raw_hma = (2 * wma_half) - wma_full
     
     df['hma_20'] = wma(raw_hma, sqrt_period)
-    # Penentu warna bar berjalan instan (df.iloc[-1])
     df['hma_color'] = np.where(df['hma_20'] > df['hma_20'].shift(1), 'Green', 'Red')
     return df
 
@@ -141,12 +136,10 @@ def execute_indodax_trade(pair, action, amount_or_coin):
         "nonce": nonce
     }
     
-    # Ketentuan Indodax untuk Market Order: 
-    # BUY menggunakan nominal Rupiah (idr), SELL menggunakan kuantitas aset koin
     if action.lower() == "buy":
         payload["idr"] = str(int(amount_or_coin))
     else:
-        payload["order_type"] = "market"  # Pastikan flag market tersemat untuk penjualan
+        payload["order_type"] = "market"
         payload["amount"] = f"{amount_or_coin:.8f}"
         
     query_string = requests.compat.urlencode(payload)
@@ -167,7 +160,7 @@ def run_autonomous_engine():
     cursor = db_conn.cursor()
     cursor.execute("SELECT max_mdd, min_vol FROM settings LIMIT 1")
     setting_row = cursor.fetchone()
-    max_mdd, min_vol = setting_row if setting_row else (5.0, 50000000)
+    max_mdd, min_vol = setting_row[:2] if setting_row else (5.0, 50000000)
     
     now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     cursor.execute("UPDATE settings SET last_run = ?", (now_str,))
@@ -184,36 +177,40 @@ def run_autonomous_engine():
         current_price = last_bar['close']
         current_volume_idr = last_bar['volume'] * current_price
         
-        # FILTER RISIKO 1: Minimum Volume Likuiditas Pasar
         if current_volume_idr < min_vol: 
             continue
             
-        # Ambil status memori transaksi terakhir pair dari SQLite
         cursor.execute("SELECT last_signal, holding_amount FROM trades WHERE pair = ?", (pair,))
         row = cursor.fetchone()
         last_signal, holding_amount = row if row else ("NONE", 0.0)
         
-        # 🟢 LOGIKA EKSEKUSI BUY (HMA Hijau Agresif & Wajib Bergantian)
+        # 🟢 LOGIKA EKSEKUSI BUY (Menulis kolom secara spesifik agar tidak terbalik)
         if current_color == 'Green' and last_signal != 'BUY':
             res = execute_indodax_trade(pair, "buy", MODAL_PER_TRANSAKSI_IDR)
             if res.get("success") == 1:
                 return_receive = float(res['return'].get('receive_coin', 0.0))
                 coin_bought = return_receive if return_receive > 0 else (MODAL_PER_TRANSAKSI_IDR / current_price)
                 
-                cursor.execute("INSERT OR REPLACE INTO trades VALUES (?, 'BUY', ?, ?, ?)", 
-                               (pair, current_price, now_str, coin_bought))
+                cursor.execute("""
+                    INSERT OR REPLACE INTO trades (pair, last_signal, entry_price, timestamp, holding_amount) 
+                    VALUES (?, 'BUY', ?, ?, ?)
+                """, (pair, current_price, now_str, coin_bought))
+                
                 cursor.execute("INSERT INTO history (pair, type, price, status, timestamp) VALUES (?, 'BUY', ?, 'SUCCESS', ?)", 
                                (pair, current_price, now_str))
                 db_conn.commit()
                 
-        # 🔴 LOGIKA EKSEKUSI SELL (HMA Merah / Sistem Anti-Repaint Darurat)
+        # 🔴 LOGIKA EKSEKUSI SELL 
         elif current_color == 'Red' and last_signal == 'BUY':
             coin_to_sell = holding_amount if holding_amount > 0 else (MODAL_PER_TRANSAKSI_IDR / current_price)
             
             res = execute_indodax_trade(pair, "sell", coin_to_sell)
             if res.get("success") == 1:
-                cursor.execute("INSERT OR REPLACE INTO trades VALUES (?, 'SELL', ?, ?, 0.0)", 
-                               (pair, current_price, now_str))
+                cursor.execute("""
+                    INSERT OR REPLACE INTO trades (pair, last_signal, entry_price, timestamp, holding_amount) 
+                    VALUES (?, 'SELL', ?, ?, 0.0)
+                """, (pair, current_price, now_str))
+                
                 cursor.execute("INSERT INTO history (pair, type, price, status, timestamp) VALUES (?, 'SELL', ?, 'SUCCESS', ?)", 
                                (pair, current_price, now_str))
                 db_conn.commit()
@@ -221,7 +218,6 @@ def run_autonomous_engine():
 # =====================================================================
 # 6. LAYAR UTAMA MONITOR (OPTIMASI RESPONSIVENESS CHROME HP)
 # =====================================================================
-# Perhitungan metrik Win Rate dari Database secara langsung
 cursor = db_conn.cursor()
 cursor.execute("SELECT COUNT(*) FROM history WHERE type='SELL' AND status='SUCCESS'")
 total_win = cursor.fetchone()[0]
@@ -231,7 +227,7 @@ win_rate = (total_win / (total_trades / 2) * 100) if total_trades > 1 else 100.0
 
 cursor.execute("SELECT last_run FROM settings LIMIT 1")
 last_run_time = cursor.fetchone()
-last_run_display = last_run_time[0] if last_run_time else "--:--"
+last_run_display = last_run_time[0] if last_run_time else "Belum Berjalan"
 
 # Tampilan Ringkas Blok Atas HP
 st.markdown("### 🛡️ Indodax Multi-Pair Pro Server")
@@ -244,18 +240,21 @@ if last_run_display and " " in last_run_display:
 else:
     col2.metric("Server Terakhir Scan", last_run_display)
 
-# Komponen Tabel Live Running Trades
+# Komponen Tabel Live Running Trades (SANGAT AMAN & SPESIFIK KOLOM)
 st.markdown("#### 📋 Running Trades (Status Posisi)")
-df_running = pd.read_sql_query("""
-    SELECT pair as 'Pair', last_signal as 'Posisi', 
-    entry_price as 'Harga Masuk', timestamp as 'Waktu Pemicu' 
-    FROM trades WHERE last_signal='BUY'
-""", db_conn)
+try:
+    df_running = pd.read_sql_query("""
+        SELECT pair as 'Pair', last_signal as 'Posisi', 
+        entry_price as 'Harga Masuk', timestamp as 'Waktu Pemicu' 
+        FROM trades WHERE last_signal='BUY'
+    """, db_conn)
 
-if df_running.empty:
-    st.write("💡 *Semua aset sedang clean (posisi kosong/terjual).*")
-else:
-    st.dataframe(df_running, use_container_width=True, hide_index=True)
+    if df_running.empty:
+        st.write("💡 *Semua aset sedang clean (posisi kosong/terjual).*")
+    else:
+        st.dataframe(df_running, use_container_width=True, hide_index=True)
+except Exception as e:
+    st.warning("🔄 Sedang melakukan sinkronisasi database awal di Server...")
 
 # 7. LAYOUT CONTROL PANEL SIDEBAR HP
 st.sidebar.header("⚙️ Manajemen Risiko")
@@ -275,5 +274,5 @@ if st.sidebar.button("💾 Terapkan Batas Risiko"):
 # 8. DAEMON AUTO-LOOPING CLOUD (SOLUSI ANTI-LAYAR MATI)
 # =====================================================================
 run_autonomous_engine()
-time.sleep(300)  # Menahan loop selama 5 Menit (300 detik) sebelum scanning ulang
+time.sleep(300)
 st.rerun()
