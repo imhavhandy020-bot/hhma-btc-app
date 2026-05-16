@@ -78,14 +78,10 @@ def add_log_message(message):
 def get_live_market_price(pair):
     """Menembak API V2 Ticker Indodax Resmi - Jalur Terkuat Kebal IP Rate Limit"""
     try:
-        # Format API V2 Indodax menggunakan format kecil pemisah strip (e.g. btc-idr)
         clean_pair = pair.lower().replace("/", "-")
         url = f"https://indodax.com{clean_pair}"
-        
         response = requests.get(url, timeout=5)
         res = response.json()
-        
-        # Validasi struktur pengurai data JSON API V2 Indodax
         if 'last_price' in res:
             last_price = float(res['last_price'])
             vol_idr = float(res.get('volume_24h_idr', 100000000.0))
@@ -173,7 +169,6 @@ def run_autonomous_engine():
     for pair in LIST_PAIRS:
         indodax_price, volume_24j_idr = get_live_market_price(pair)
         
-        # Pengaman darurat: Jika satu koin delay, lompat khusus koin tersebut tanpa menyetop sistem
         if indodax_price is None: 
             add_log_message(f"🔍 {pair} | Status: ❌ Ticker V2 Terhambat")
             continue
@@ -230,17 +225,19 @@ def run_autonomous_engine():
 cursor = db_conn.cursor()
 cursor.execute("SELECT COUNT(*) FROM history WHERE type='SELL' AND status='SUCCESS'")
 total_win_row = cursor.fetchone()
-total_win = int(total_win_row) if total_win_row else 0
+# PERBAIKAN SINTAKS TUPLE: Ekstrak elemen indeks ke-0 murni sebelum ditransformasi ke Int
+total_win = int(total_win_row[0]) if total_win_row else 0
 
 cursor.execute("SELECT COUNT(*) FROM history WHERE status='SUCCESS'")
 total_trades_row = cursor.fetchone()
-total_trades = int(total_trades_row) if total_trades_row else 0
+# PERBAIKAN SINTAKS TUPLE: Ekstrak elemen indeks ke-0 murni sebelum ditransformasi ke Int
+total_trades = int(total_trades_row[0]) if total_trades_row else 0
 
 win_rate = (total_win / (total_trades / 2)) * 100 if total_trades > 1 and total_win > 0 else 100.0
 
 cursor.execute("SELECT last_run FROM settings LIMIT 1")
 last_run_time = cursor.fetchone()
-last_run_display = last_run_time if last_run_time else "Belum Berjalan"
+last_run_display = last_run_time[0] if last_run_time else "Belum Berjalan"
 
 total_modal_aktif = 0.0
 total_valuasi_aktif = 0.0
@@ -252,9 +249,9 @@ try:
         row = cursor.fetchone()
         live_price, _ = get_live_market_price(pair)
         
-        if row and str(row) == 'BUY':
-            entry_price = float(row)
-            holding_amount = float(row)
+        if row and str(row[0]) == 'BUY':
+            entry_price = float(row[1])
+            holding_amount = float(row[2])
             posisi = "🛒 BUYING"
             if live_price is None: live_price = entry_price
             current_value_idr = holding_amount * live_price
@@ -292,7 +289,7 @@ col_w.metric("Win Rate Bot", f"{win_rate:.1f}%")
 
 if last_run_display and " " in last_run_display:
     waktu_saja = last_run_display.split(" ")
-    col_s.metric("Server Terakhir Scan", str(waktu_saja))
+    col_s.metric("Server Terakhir Scan", str(waktu_saja[1]))
 else:
     col_s.metric("Server Terakhir Scan", str(last_run_display))
 
@@ -320,7 +317,9 @@ st.sidebar.header("⚙️ Manajemen Risiko")
 cursor = db_conn.cursor()
 cursor.execute("SELECT max_mdd, min_vol FROM settings LIMIT 1")
 curr_set = cursor.fetchone()
-curr_mdd, curr_vol = curr_set if curr_set else (5.0, 50000000)
+# PERBAIKAN SIDEBAR TUPLE: Ambil index kolom secara tegas
+curr_mdd = curr_set[0] if curr_set else 5.0
+curr_vol = curr_set[1] if curr_set else 50000000
 
 input_mdd = st.sidebar.number_input("Max Drawdown Harian (%)", value=curr_mdd, step=0.5)
 input_vol = st.sidebar.number_input("Min Volume 24J (IDR)", value=int(curr_vol), step=5000000)
@@ -330,7 +329,7 @@ if st.sidebar.button("💾 Terapkan Batas Risiko"):
     db_conn.commit()
     st.sidebar.success("Parameter risiko tersimpan ke Cloud!")
 
-# Pemindaian berkala 60 detik menggunakan API V2 yang kebal blokir
+# Jalankan looping mandiri per 60 detik
 run_autonomous_engine()
 time.sleep(60)
 st.rerun()
