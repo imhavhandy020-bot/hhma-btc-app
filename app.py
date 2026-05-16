@@ -1,216 +1,128 @@
-import streamlit as tf
+import streamlit as st
+import ccxt
 import pandas as pd
 import numpy as np
-import sqlite3
 import time
-from datetime import datetime, timedelta
 
-# --- CONFIGURASI UTAMA ---
-PAIR_UTAMA = "BTC/IDR"
-TIMEFRAME = "4h"
-INTERVAL_DETIK = 5
-DB_NAME = "trading_bot.db"
-
-# Target Manajemen Risiko (Persentase)
-TP_PERSEN = 5.0  # Take Profit 5%
-SL_PERSEN = 2.0  # Stop Loss 2%
-
-tf.set_page_config(page_title="Indodax Multi-Pair Pro", layout="wide")
-tf.title("🤖 Bot Trading Indodax Multi-Pair Pro (Fixed KeyError)")
-
-# --- INITIALISASI & MIGRASI DATABASE PERMANEN ---
-def init_db():
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    
-    # 1. Buat tabel dasar jika belum ada
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS posisi (
-            pair TEXT PRIMARY KEY,
-            status TEXT,
-            harga_beli REAL,
-            waktu_eksekusi TEXT
-        )
-    ''')
-    
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS riwayat (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            pair TEXT,
-            tipe TEXT,
-            harga REAL,
-            keterangan TEXT,
-            waktu TEXT
-        )
-    ''')
-    
-    # 2. AUTO-MIGRASI: Tambah kolom baru jika database lama masih memakai struktur lama
-    cursor.execute("PRAGMA table_info(posisi)")
-    kolom_ada = [info[1] for info in cursor.fetchall()]
-    
-    if "harga_tp" not in kolom_ada:
-        cursor.execute("ALTER TABLE posisi ADD COLUMN harga_tp REAL DEFAULT 0.0")
-    if "harga_sl" not in kolom_ada:
-        cursor.execute("ALTER TABLE posisi ADD COLUMN harga_sl REAL DEFAULT 0.0")
-        
-    # 3. Isi data awal jika baris pair belum terdaftar
-    cursor.execute("SELECT COUNT(*) FROM posisi WHERE pair = ?", (PAIR_UTAMA,))
-    if cursor.fetchone()[0] == 0:
-        cursor.execute("INSERT INTO posisi VALUES (?, ?, ?, ?, ?, ?)", (PAIR_UTAMA, "CARI_BUY", 0.0, "-", 0.0, 0.0))
-        
-    conn.commit()
-    conn.close()
-
-# Jalankan inisialisasi dan migrasi database sebelum membaca data
-init_db()
-
-# --- STANDALONE MOCK ENGINE (Anti-Blokir & Delay) ---
-def ambil_data_feed(pair):
-    np.random.seed(int(time.time()) // 1000) 
-    harga_dasar = 1_000_000_000 # ~1 Milyar IDR
-    waktu_sekarang = datetime.now()
-    list_waktu = [waktu_sekarang - timedelta(hours=4*i) for i in range(50, -1, -1)]
-    
-    close_prices = harga_dasar + np.cumsum(np.random.normal(0, 15000000, len(list_waktu)))
-    open_prices = close_prices - np.random.normal(0, 5000000, len(list_waktu))
-    high_prices = np.maximum(open_prices, close_prices) + np.abs(np.random.normal(0, 3000000, len(list_waktu)))
-    low_prices = np.minimum(open_prices, close_prices) - np.abs(np.random.normal(0, 3000000, len(list_waktu)))
-    
-    df = pd.DataFrame({
-        'waktu': list_waktu,
-        'open': open_prices,
-        'high': high_prices,
-        'low': low_prices,
-        'close': close_prices
-    })
-    return df
-
-# --- PERHITUNGAN FORMULA HMA-20 (OFFSET = -1) ---
-def hitung_wma(series, period):
+# --- FUNGSI INDIKATOR HHMA ---
+def calculate_wma(series, period):
     weights = np.arange(1, period + 1)
     return series.rolling(period).apply(lambda x: np.dot(x, weights) / weights.sum(), raw=True)
 
-def hitung_hma(df, period=20):
+def calculate_hma(series, period):
     half_period = int(period / 2)
     sqrt_period = int(np.sqrt(period))
-    wma_half = hitung_wma(df['close'], half_period)
-    wma_full = hitung_wma(df['close'], period)
+    wma_half = calculate_wma(series, half_period)
+    wma_full = calculate_wma(series, period)
     raw_hma = (2 * wma_half) - wma_full
-    df['hma'] = hitung_wma(raw_hma, sqrt_period)
-    df['hma_signal'] = df['hma'].shift(1)
-    return df
+    return calculate_wma(raw_hma, sqrt_period)
 
-# --- FUNGSI UTILITAS DATABASE ---
-def dapatkan_status():
-    conn = sqlite3.connect(DB_NAME)
-    df = pd.read_sql(f"SELECT * FROM posisi WHERE pair='{PAIR_UTAMA}'", conn)
-    conn.close()
-    return df.iloc[0] if not df.empty else None
+# --- CONFIG APLIKASI ---
+st.set_page_config(page_title="Indodax Auto-Trading Bot", layout="wide")
+st.title("🤖 Indodax Auto-Trading Bot (HHMA)")
 
-def eksekusi_buy(harga):
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    waktu_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    
-    tp_harga = harga * (1 + (TP_PERSEN / 100))
-    sl_harga = harga * (1 - (SL_PERSEN / 100))
-    
-    cursor.execute(
-        "UPDATE posisi SET status=?, harga_beli=?, harga_tp=?, harga_sl=?, waktu_eksekusi=? WHERE pair=?",
-        ("BUY_SUCCESS", harga, tp_harga, sl_harga, waktu_str, PAIR_UTAMA)
-    )
-    cursor.execute(
-        "INSERT INTO riwayat (pair, tipe, harga, keterangan, waktu) VALUES (?, ?, ?, ?, ?)",
-        (PAIR_UTAMA, "BUY", harga, f"Target TP: {tp_harga:,.0f} | SL: {sl_harga:,.0f}", waktu_str)
-    )
-    conn.commit()
-    conn.close()
+# --- SIDEBAR: Kredensial & Parameter ---
+st.sidebar.header("🔑 Kredensial Indodax")
+api_key = st.sidebar.text_input("API Key", type="password", help="Dapatkan dari menu API di Indodax")
+secret_key = st.sidebar.text_input("Secret Key", type="password")
 
-def eksekusi_sell(harga, alasan):
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    waktu_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    
-    cursor.execute(
-        "UPDATE posisi SET status=?, harga_beli=?, harga_tp=?, harga_sl=?, waktu_eksekusi=? WHERE pair=?",
-        ("CARI_BUY", 0.0, 0.0, 0.0, waktu_str, PAIR_UTAMA)
-    )
-    cursor.execute(
-        "INSERT INTO riwayat (pair, tipe, harga, keterangan, waktu) VALUES (?, ?, ?, ?, ?)",
-        (PAIR_UTAMA, "SELL", harga, f"Sinyal Keluar: {alasan}", waktu_str)
-    )
-    conn.commit()
-    conn.close()
+st.sidebar.header("⚙️ Pengaturan Bot")
+symbol = st.sidebar.text_input("Simbol Trading", value="BTC/IDR")
+timeframe = st.sidebar.selectbox("Timeframe", ["1m", "5m", "15m", "1h", "1d"], index=0)
+fast_period = st.sidebar.number_input("HHMA Cepat", value=9)
+slow_period = st.sidebar.number_input("HHMA Lambat (HHMA20)", value=20)
+trade_amount = st.sidebar.number_input("Jumlah Beli (IDR)", value=50000, step=10000)
 
-# --- ENGINE LOGIKA UTAMA (HMA + TP/SL PROTECTION) ---
-df_Clean = ambil_data_feed(PAIR_UTAMA)
-df_Indikator = hitung_hma(df_Clean, period=20)
+st.sidebar.header("⏱️ Interval Auto-Refresh")
+refresh_interval = st.sidebar.slider("Interval Cek (Detik)", min_value=10, max_value=300, value=30, step=10)
 
-bar_terakhir = df_Indikator.iloc[-1]
-harga_live = bar_terakhir['close']
-hma_aktif = bar_terakhir['hma_signal']
+# --- INISIALISASI API ---
+exchange = None
+if api_key and secret_key:
+    exchange = ccxt.indodax({
+        'apiKey': api_key,
+        'secret': secret_key,
+        'enableRateLimit': True,
+    })
+    st.sidebar.success("API Terhubung!")
+else:
+    st.sidebar.warning("Silakan masukkan API & Secret Key untuk memulai.")
 
-status_sekarang = dapatkan_status()
-
-if status_sekarang is not None:
-    if status_sekarang['status'] == "CARI_BUY":
-        if harga_live > hma_aktif:
-            eksekusi_buy(harga_live)
-
-    elif status_sekarang['status'] == "BUY_SUCCESS":
-        # Proteksi Berbasis Nilai Numerik Aman
-        batasi_tp = float(status_sekarang['harga_tp'])
-        batasi_sl = float(status_sekarang['harga_sl'])
+# --- FUNGSI UTAMA BOT (DENGAN REFRESH OTOMATIS) ---
+# Menggunakan st.fragment agar area monitoring memperbarui dirinya sendiri secara berkala
+@st.fragment(run_every=refresh_interval)
+def run_trading_bot():
+    if not exchange:
+        st.info("Menunggu kredensial API Indodax yang valid...")
+        return
         
-        if harga_live >= batasi_tp and batasi_tp > 0:
-            eksekusi_sell(harga_live, f"TAKE PROFIT HIT ({TP_PERSEN}%)")
-        elif harga_live <= batasi_sl and batasi_sl > 0:
-            eksekusi_sell(harga_live, f"STOP LOSS HIT (-{SL_PERSEN}%)")
-        elif harga_live < hma_aktif:
-            eksekusi_sell(harga_live, "HMA CROSS DOWN")
-
-# --- ANTARMUKA STREAMLIT UI ---
-status_terbaru = dapatkan_status()
-
-col1, col2, col3, col4 = tf.columns(4)
-col1.metric("Pair Pantauan", PAIR_UTAMA)
-col2.metric("Harga Live", f"Rp {harga_live:,.0f}")
-col3.metric(f"HMA-20 (4h Offset -1)", f"Rp {hma_aktif:,.0f}")
-col4.metric("Status Bot", status_terbaru['status'] if status_terbaru is not None else "-")
-
-tf.markdown(f"**🛡️ Pengaman Aktif:** Take Profit: `{TP_PERSEN}%` | Stop Loss: `{SL_PERSEN}%`")
-
-tf.subheader("📊 Analisis Data Real-Time")
-tf.line_chart(df_Indikator.set_index('waktu')[['close', 'hma_signal']])
-
-col_status, col_log = tf.columns(2)
-
-with col_status:
-    tf.markdown("### 📌 Posisi & Batas Pengaman")
-    if status_terbaru is not None:
-        tf.json({
-            "Pair": status_terbaru['pair'],
-            "Status Order": status_terbaru['status'],
-            "Harga Beli": f"Rp {status_terbaru['harga_beli']:,.0f}",
-            "Batas Target TP": f"Rp {status_terbaru['harga_tp']:,.0f}",
-            "Batas Resiko SL": f"Rp {status_terbaru['harga_sl']:,.0f}",
-            "Waktu Sinyal": status_terbaru['waktu_eksekusi']
-        })
-
-with col_log:
-    tf.markdown("### 📜 Riwayat Transaksi (Database)")
-    conn = sqlite3.connect(DB_NAME)
     try:
-        df_riwayat = pd.read_sql("SELECT * FROM riwayat ORDER BY id DESC LIMIT 5", conn)
-    except Exception:
-        df_riwayat = pd.DataFrame()
-    conn.close()
-    
-    if not df_riwayat.empty:
-        tf.dataframe(df_riwayat, use_container_width=True)
-    else:
-        tf.info("Belum ada transaksi TP/SL atau HMA yang terekam.")
+        # Menampilkan penanda waktu pembaruan terakhir
+        st.caption(f"🔄 Pembaruan Terakhir: {time.strftime('%Y-%m-%d %H:%M:%S')}")
+        
+        # 1. Cek Saldo Akun (Real Data)
+        balance = exchange.fetch_balance()
+        base_asset = symbol.split('/')[0]   # Contoh: BTC
+        quote_asset = symbol.split('/')[1]  # Contoh: IDR
+        
+        saldo_idr = balance['total'].get(quote_asset, 0)
+        saldo_kripto = balance['total'].get(base_asset, 0)
+        
+        st.subheader("💰 Saldo Akun")
+        col_bal1, col_bal2 = st.columns(2)
+        col_bal1.metric(f"Saldo {quote_asset}", f"{saldo_idr:,.0f} IDR")
+        col_bal2.metric(f"Saldo {base_asset}", f"{saldo_kripto:.8f}")
 
-# Fitur Auto Refresh Berkecepatan Tinggi (5 Detik)
-time.sleep(INTERVAL_DETIK)
-tf.rerun()
+        # 2. Ambil Data Harga & Hitung Sinyal
+        ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=100)
+        df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+        
+        df['hhma_fast'] = calculate_hma(df['close'], fast_period)
+        df['hhma_slow'] = calculate_hma(df['close'], slow_period)
+        
+        # Deteksi Persilangan (Crossover)
+        latest_idx = df.index[-1]
+        prev_idx = df.index[-2]
+        current_close = df.loc[latest_idx, 'close']
+        
+        is_buy_signal = (df.loc[latest_idx, 'hhma_fast'] > df.loc[latest_idx, 'hhma_slow']) and \
+                         (df.loc[prev_idx, 'hhma_fast'] <= df.loc[prev_idx, 'hhma_slow'])
+                         
+        is_sell_signal = (df.loc[latest_idx, 'hhma_fast'] < df.loc[latest_idx, 'hhma_slow']) and \
+                          (df.loc[prev_idx, 'hhma_fast'] >= df.loc[prev_idx, 'hhma_slow'])
+
+        # Tampilkan Status Harga Saat Ini
+        st.subheader(f"📊 Analisis Pasar {symbol}")
+        col_p1, col_p2, col_p3 = st.columns(3)
+        col_p1.metric("Harga Terkini", f"{current_close:,.0f} IDR")
+        col_p2.metric("HHMA Fast", f"{df.loc[latest_idx, 'hhma_fast']:,.2f}")
+        col_p3.metric("HHMA Slow (20)", f"{df.loc[latest_idx, 'hhma_slow']:,.2f}")
+
+        # 3. Eksekusi Order Otomatis (REAL TRADING)
+        st.subheader("⚡ Status Eksekusi")
+        
+        if is_buy_signal:
+            st.warning("🔴 SINYAL BUY TERDETEKSI! Memproses order...")
+            if saldo_idr >= trade_amount:
+                amount_to_buy = trade_amount / current_close
+                order = exchange.create_market_buy_order(symbol, amount_to_buy)
+                st.success(f"Berhasil BELI {symbol}! ID Order: {order['id']}")
+            else:
+                st.error(f"Gagal Beli: Saldo {quote_asset} tidak cukup. Butuh {trade_amount:,.0f} IDR.")
+                
+        elif is_sell_signal:
+            st.warning("🟢 SINYAL SELL TERDETEKSI! Memproses order...")
+            if saldo_kripto > 0.0001: 
+                order = exchange.create_market_sell_order(symbol, saldo_kripto)
+                st.success(f"Berhasil JUAL {symbol}! ID Order: {order['id']}")
+            else:
+                st.error(f"Gagal Jual: Anda tidak memiliki saldo {base_asset} untuk dijual.")
+        else:
+            st.info("⌛ Market dalam kondisi HOLD. Belum ada perpotongan garis HHMA baru.")
+
+    except Exception as e:
+        st.error(f"Terjadi Kesalahan API / Trading: {e}")
+
+# Memanggil fungsi bot di halaman utama
+run_trading_bot()
