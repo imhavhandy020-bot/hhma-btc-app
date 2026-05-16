@@ -6,43 +6,23 @@ import sqlite3
 from datetime import datetime
 
 # Konfigurasi Tampilan Layar HP
-st.set_page_config(page_title="Indodax HMA Bot v2", layout="centered")
+st.set_page_config(page_title="Indodax Auto Trade Bot Ultimate", layout="centered")
 
-# ==========================================
-# MENU INPUT PARAMETER (SIDEBAR HP)
-# ==========================================
-st.sidebar.title("⚙️ Pengaturan Bot")
-
-# 1. Kolom Input API Key Indodax
-st.sidebar.subheader("🔑 Kredensial Indodax")
-api_key_input = st.sidebar.text_input("API Key", type="password", help="Masukkan API Key Indodax Anda")
-secret_key_input = st.sidebar.text_input("Secret Key", type="password", help="Masukkan Secret Key Indodax Anda")
-
-# 2. Menu Indikator & Pembatasan Data
-st.sidebar.subheader("📈 Parameter Indikator")
-SYMBOL = st.sidebar.selectbox("Pilih Aset", ["BTC/IDR", "ETH/IDR", "USDT/IDR"], index=0)
-TIMEFRAME = st.sidebar.selectbox("Timeframe", ["1d", "4h", "1h", "15m"], index=0)
-HMA_LENGTH = st.sidebar.number_input("Panjang HMA (Length)", min_value=1, max_value=100, value=2, step=1)
-MAX_BARS = st.sidebar.slider("Pembatasan Bar (Max Bars)", min_value=10, max_value=500, value=100, step=10)
-
-# 3. Parameter Risiko
-st.sidebar.subheader("🛡️ Manajemen Risiko")
-TAKE_PROFIT_PCT = st.sidebar.number_input("Pelebaran Profit / TP (%)", min_value=0.1, max_value=100.0, value=5.0) / 100
-STOP_LOSS_PCT = st.sidebar.number_input("Batasan Rugi / SL (%)", min_value=0.1, max_value=100.0, value=2.0) / 100
-
-# Inisialisasi CCXT berdasarkan Key yang Diinput
-def init_exchange(api_key, secret_key):
-    if api_key and secret_key:
-        return ccxt.indodax({
-            'apiKey': api_key,
-            'secret': secret_key,
-            'enableRateLimit': True
-        })
-    else:
-        # Jika key kosong, gunakan mode public (hanya baca data harga saja)
-        return ccxt.indodax({'enableRateLimit': True})
-
-exchange = init_exchange(api_key_input, secret_key_input)
+# =========================================================
+# MENYIMPAN DATA AGAR TIDAK HILANG SAAT REFRESH
+# =========================================================
+if "api_key" not in st.session_state: st.session_state.api_key = ""
+if "secret_key" not in st.session_state: st.session_state.secret_key = ""
+if "symbol" not in st.session_state: st.session_state.symbol = "BTC/IDR"
+if "timeframe" not in st.session_state: st.session_state.timeframe = "1d"
+if "hma_length" not in st.session_state: st.session_state.hma_length = 2
+if "max_bars" not in st.session_state: st.session_state.max_bars = 100
+if "tp_pct" not in st.session_state: st.session_state.tp_pct = 5.0
+if "sl_pct" not in st.session_state: st.session_state.sl_pct = 2.0
+if "order_idr" not in st.session_state: st.session_state.order_idr = 50000.0  
+if "sim_balance" not in st.session_state: st.session_state.sim_balance = 10000000.0
+if "last_signal" not in st.session_state: st.session_state.last_signal = 0
+if "refresh_rate" not in st.session_state: st.session_state.refresh_rate = 5
 
 # ==========================================
 # MANAJEMEN DATABASE SQLITE
@@ -56,6 +36,7 @@ def init_db():
             timestamp TEXT,
             signal_type TEXT,
             price REAL,
+            amount REAL,
             tp_price REAL,
             sl_price REAL,
             status TEXT
@@ -64,21 +45,90 @@ def init_db():
     conn.commit()
     conn.close()
 
-def get_trade_history():
+def get_trade_history(filter_type="Semua"):
     conn = sqlite3.connect('trading_bot.db')
-    df = pd.read_sql_query("SELECT * FROM trades ORDER BY id DESC LIMIT 10", conn)
+    if filter_type == "Hanya Live Trading":
+        query = "SELECT * FROM trades WHERE status LIKE 'LIVE%' ORDER BY id DESC"
+    elif filter_type == "Hanya Simulasi":
+        query = "SELECT * FROM trades WHERE status = 'SIMULASI' ORDER BY id DESC"
+    else:
+        query = "SELECT * FROM trades ORDER BY id DESC"
+    df = pd.read_sql_query(query, conn)
     conn.close()
     return df
 
-def save_trade(signal_type, price, tp, sl):
+def save_trade(signal_type, price, amount, tp, sl, status="EXECUTED"):
     conn = sqlite3.connect('trading_bot.db')
     cursor = conn.cursor()
     cursor.execute('''
-        INSERT INTO trades (timestamp, signal_type, price, tp_price, sl_price, status)
-        VALUES (datetime('now'), ?, ?, ?, ?, 'OPEN')
-    ''', (signal_type, price, tp, sl))
+        INSERT INTO trades (timestamp, signal_type, price, amount, tp_price, sl_price, status)
+        VALUES (datetime('now'), ?, ?, ?, ?, ?, ?)
+    ''', (signal_type, price, amount, tp, sl, status))
     conn.commit()
     conn.close()
+
+def clear_db():
+    conn = sqlite3.connect('trading_bot.db')
+    cursor = conn.cursor()
+    cursor.execute('DELETE FROM trades')
+    conn.commit()
+    conn.close()
+
+# Pastikan database siap dari awal
+init_db()
+
+# ==========================================
+# MENU INPUT PARAMETER (SIDEBAR HP)
+# ==========================================
+st.sidebar.title("⚙️ Kendali Otomatis Bot")
+
+st.sidebar.subheader("🔑 Kredensial Akun Indodax")
+api_input = st.sidebar.text_input("API Key", type="password", value=st.session_state.api_key)
+secret_input = st.sidebar.text_input("Secret Key", type="password", value=st.session_state.secret_key)
+
+if api_input != st.session_state.api_key: st.session_state.api_key = api_input
+if secret_input != st.session_state.secret_key: st.session_state.secret_key = secret_input
+
+if not st.session_state.api_key or not st.session_state.secret_key:
+    st.sidebar.subheader("🎮 Pengaturan Simulasi")
+    st.session_state.sim_balance = st.sidebar.number_input("Modal Awal Simulasi (IDR)", min_value=10000.0, value=st.session_state.sim_balance, step=500000.0)
+
+st.sidebar.subheader("💰 Jumlah Perdagangan")
+st.session_state.order_idr = st.sidebar.number_input("Jumlah Beli Per Sinyal (IDR)", min_value=10000.0, value=st.session_state.order_idr, step=5000.0)
+
+st.sidebar.subheader("📈 Parameter Indikator")
+symbol_options = ["BTC/IDR", "ETH/IDR", "USDT/IDR"]
+idx_sym = symbol_options.index(st.session_state.symbol) if st.session_state.symbol in symbol_options else 0
+st.session_state.symbol = st.sidebar.selectbox("Pilih Aset", symbol_options, index=idx_sym)
+
+tf_options = ["1d", "4h", "1h", "15m"]
+idx_tf = tf_options.index(st.session_state.timeframe) if st.session_state.timeframe in tf_options else 0
+st.session_state.timeframe = st.sidebar.selectbox("Timeframe", tf_options, index=idx_tf)
+
+st.session_state.hma_length = st.sidebar.number_input("Panjang HMA", min_value=1, max_value=100, value=st.session_state.hma_length)
+st.session_state.max_bars = st.sidebar.slider("Pembatasan Bar", min_value=10, max_value=500, value=st.session_state.max_bars)
+
+st.sidebar.subheader("🛡️ Pembatasan Profit & Rugi")
+st.session_state.tp_pct = st.sidebar.number_input("Pelebaran Profit / TP (%)", min_value=0.1, value=st.session_state.tp_pct)
+st.session_state.sl_pct = st.sidebar.number_input("Stop Loss / SL (%)", min_value=0.1, value=st.session_state.sl_pct)
+
+# ─── BARU: PENGATURAN KENDALIAN SISTEM DI SIDEBAR ───
+st.sidebar.subheader("⏱️ Sinkronisasi & Pembersihan")
+st.session_state.refresh_rate = st.sidebar.slider("Jeda Auto-Refresh (Detik)", min_value=1, max_value=60, value=st.session_state.refresh_rate)
+
+if st.sidebar.button("🗑️ Hapus Semua Riwayat Tabel", type="primary", use_container_width=True):
+    clear_db()
+    st.session_state.last_signal = 0  # Reset pengunci sinyal
+    st.sidebar.success("Database berhasil dikosongkan!")
+    st.rerun()
+
+# Inisialisasi Bursa
+def init_exchange(api, secret):
+    if api and secret:
+        return ccxt.indodax({'apiKey': api, 'secret': secret, 'enableRateLimit': True})
+    return ccxt.indodax({'enableRateLimit': True})
+
+exchange = init_exchange(st.session_state.api_key, st.session_state.secret_key)
 
 # ==========================================
 # RUMUS MATEMATIKA HMA
@@ -97,18 +147,31 @@ def calculate_hma(df, length):
     return df
 
 # ==========================================
-# KOMPONEN REFRESH OTOMATIS (FRAGMENT)
+# KOMPONEN REFRESH DAN EKSEKUSI UTAMA
 # ==========================================
-@st.fragment(run_every=5)
+@st.fragment(run_every=st.session_state.refresh_rate) # Nilai waktu mengikuti slider dinamis
 def market_monitor_fragment():
     waktu_sekarang = datetime.now().strftime('%H:%M:%S')
-    st.caption(f"🔄 Auto-Refresh Aktif: {waktu_sekarang}")
+    st.caption(f"🔄 Sinkronisasi Indodax (Setiap {st.session_state.refresh_rate} Detik): {waktu_sekarang}")
     
+    base_coin = st.session_state.symbol.split('/')[0]
+    
+    # Render Informasi Dompet
+    if st.session_state.api_key and st.session_state.secret_key:
+        try:
+            balance = exchange.fetch_balance()
+            saldo_idr = balance['free']['IDR'] if 'IDR' in balance['free'] else 0.0
+            saldo_coin = balance['free'][base_coin] if base_coin in balance['free'] else 0.0
+            st.info(f"尊 **Dompet Akun Real Anda:**  \n💵 Saldo Rupiah: **Rp {saldo_idr:,.0f}**  \n🪙 Sisa Koin ({base_coin}): **{saldo_coin:.6f} {base_coin}**")
+        except Exception as bal_err:
+            st.sidebar.error(f"Gagal Memuat Saldo API: {bal_err}")
+    else:
+        st.info(f"🎮 **Dompet Kustom Simulasi:**  \n💵 Saldo Rupiah: **Rp {st.session_state.sim_balance:,.0f}**  \n🪙 Sisa Koin ({base_coin}): **0.000000 {base_coin}**")
+
     try:
-        # Menarik data dengan limit sesuai input "Pembatasan Bar"
-        bars = exchange.fetch_ohlcv(SYMBOL, TIMEFRAME, limit=int(MAX_BARS))
+        bars = exchange.fetch_ohlcv(st.session_state.symbol, st.session_state.timeframe, limit=int(st.session_state.max_bars))
         df = pd.DataFrame(bars, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-        df = calculate_hma(df, int(HMA_LENGTH))
+        df = calculate_hma(df, int(st.session_state.hma_length))
         
         current_hma = df['hma'].iloc[-1]
         prev_hma = df['hma'].iloc[-2]
@@ -122,72 +185,81 @@ def market_monitor_fragment():
         raw_sell = not is_green_now and is_green_prev
         
         col1, col2 = st.columns(2)
-        col1.metric(label=f"Harga {SYMBOL}", value=f"{current_close:,.0f} IDR")
+        col1.metric(label=f"Harga Sekarang ({st.session_state.symbol})", value=f"{current_close:,.0f} IDR")
         
         if is_green_now:
-            col2.metric(label="Tren HHMA", value="HIJAU (BULL)", delta="Naik")
+            col2.metric(label="Status Tren HHMA", value="HIJAU (BUY ZONE)", delta="Naik")
         else:
-            col2.metric(label="Tren HHMA", value="MERAH (BEAR)", delta="-Turun", delta_color="inverse")
+            col2.metric(label="Status Tren HHMA", value="MERAH (SELL ZONE)", delta="-Turun", delta_color="inverse")
             
-        if 'last_signal' not in st.session_state:
-            st.session_state.last_signal = 0
-            
+        # Logika Eksekusi Otomatis Sinyal Bergantian
         if raw_buy and st.session_state.last_signal != 1:
-            tp = current_close * (1 + TAKE_PROFIT_PCT)
-            sl = current_close * (1 - STOP_LOSS_PCT)
+            tp = current_close * (1 + (st.session_state.tp_pct / 100))
+            sl = current_close * (1 - (st.session_state.sl_pct / 100))
+            amount_to_buy = st.session_state.order_idr / current_close 
             
-            # Eksekusi riil hanya berjalan jika API Key diisi
-            if api_key_input and secret_key_input:
+            status_order = "SIMULASI"
+            if st.session_state.api_key and st.session_state.secret_key:
                 try:
-                    # exchange.create_market_buy_order(SYMBOL, jumlah_beli)
-                    pass
+                    order = exchange.create_market_buy_order(st.session_state.symbol, amount_to_buy)
+                    status_order = "LIVE_BUY_SUCCESS"
                 except Exception as trade_err:
-                    st.sidebar.error(f"Gagal Order Riil: {trade_err}")
+                    st.error(f"Gagal Eksekusi Buy Indodax: {trade_err}")
+                    status_order = f"ERROR: {str(trade_err)[:30]}"
+            else:
+                st.session_state.sim_balance -= st.session_state.order_idr
             
-            save_trade('BUY', current_close, tp, sl)
+            save_trade('BUY', current_close, amount_to_buy, tp, sl, status_order)
             st.session_state.last_signal = 1
-            st.toast("🚨 Sinyal BUY Baru Tersimpan!", icon="🟩")
+            st.toast("🟩 AUTOMATIC BUY BERHASIL!", icon="🛒")
+            st.rerun() 
             
         elif raw_sell and st.session_state.last_signal != -1:
-            tp = current_close * (1 - TAKE_PROFIT_PCT)
-            sl = current_close * (1 + STOP_LOSS_PCT)
+            tp = current_close * (1 - (st.session_state.tp_pct / 100))
+            sl = current_close * (1 + (st.session_state.sl_pct / 100))
+            amount_to_sell = st.session_state.order_idr / current_close
             
-            if api_key_input and secret_key_input:
+            status_order = "SIMULASI"
+            if st.session_state.api_key and st.session_state.secret_key:
                 try:
-                    # exchange.create_market_sell_order(SYMBOL, jumlah_jual)
-                    pass
+                    order = exchange.create_market_sell_order(st.session_state.symbol, amount_to_sell)
+                    status_order = "LIVE_SELL_SUCCESS"
                 except Exception as trade_err:
-                    st.sidebar.error(f"Gagal Order Riil: {trade_err}")
+                    st.error(f"Gagal Eksekusi Sell Indodax: {trade_err}")
+                    status_order = f"ERROR: {str(trade_err)[:30]}"
+            else:
+                st.session_state.sim_balance += st.session_state.order_idr
             
-            save_trade('SELL', current_close, tp, sl)
+            save_trade('SELL', current_close, amount_to_sell, tp, sl, status_order)
             st.session_state.last_signal = -1
-            st.toast("🚨 Sinyal SELL Baru Tersimpan!", icon="🟥")
+            st.toast("🟥 AUTOMATIC SELL BERHASIL!", icon="💰")
+            st.rerun()
             
-        # Menampilkan grafik sesuai batasan bar yang dipilih
-        st.line_chart(df[['close', 'hma']].tail(int(MAX_BARS)))
+        st.line_chart(df[['close', 'hma']].tail(int(st.session_state.max_bars)))
         
     except Exception as e:
-        st.error(f"Gagal memuat data pasar: {e}")
+        st.error(f"Koneksi Indodax terputus, memuat ulang... ({e})")
 
 # ==========================================
-# ALUR UTAMA TAMPILAN APP
+# ALUR UTAMA HALAMAN WEB
 # ==========================================
-st.title("📊 Indodax Monitor Bot")
-init_db()
+st.title("🤖 Indodax Auto Trading Bot")
 
-# Indikator status koneksi API di atas halaman
-if api_key_input and secret_key_input:
-    st.success("🔐 API Key Terpasang (Mode Live Trading Aktif)")
+if st.session_state.api_key and st.session_state.secret_key:
+    st.success("🤖 BOT LIVE OTOMATIS AKTIF")
 else:
-    st.warning("🔓 Menggunakan Mode Public (Hanya Memantau / Simulasi)")
+    st.warning("⚠️ MODE SIMULASI AKTIF")
 
-st.subheader("Live Market")
+st.subheader("Live Market Tracker")
 market_monitor_fragment()
 
-st.subheader("📦 Data Riwayat Transaksi (Terbaca dari SQLite)")
-history_df = get_trade_history()
+# Filter Data Riwayat Transaksi
+st.subheader("📦 Buku Transaksi")
+filter_pilihan = st.radio("Saring Data Tabel:", ["Semua Transaksi", "Hanya Live Trading", "Hanya Simulasi"], horizontal=True)
+
+history_df = get_trade_history(filter_pilihan)
 
 if not history_df.empty:
-    st.dataframe(history_df, use_container_width=True)
+    st.dataframe(history_df.head(15), use_container_width=True)
 else:
-    st.info("Belum ada data transaksi masuk yang tersimpan.")
+    st.info("Tidak ada data transaksi yang sesuai dengan saringan pilihan.")
