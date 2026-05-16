@@ -21,7 +21,7 @@ MODAL_PER_TRANSAKSI_IDR = 50000.0  # nominal modal Rp 50.000 per transaksi BUY
 # 2. SISTEM MEMORI PERMANEN & DATABASE PROTECTION (ANTI-CRASH)
 # =====================================================================
 def init_db():
-    conn = sqlite3.connect('trading_bot.db', check_same_thread=False, timeout=15)
+    conn = sqlite3.connect('trading_bot.db', check_same_thread=False, timeout=20)
     cursor = conn.cursor()
     try:
         cursor.execute("SELECT pair, last_signal, entry_price, timestamp, holding_amount FROM trades LIMIT 1")
@@ -44,11 +44,6 @@ def init_db():
             id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp TEXT, message TEXT
         )
     """)
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS engine_candles (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, close REAL, timestamp TEXT
-        )
-    """)
     try:
         cursor.execute("SELECT last_run FROM settings LIMIT 1")
     except sqlite3.OperationalError:
@@ -67,35 +62,45 @@ def add_log_message(message):
         cursor = db_conn.cursor()
         now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         cursor.execute("INSERT INTO activity_logs (timestamp, message) VALUES (?, ?)", (now_str, message))
-        cursor.execute("DELETE FROM activity_logs WHERE id NOT IN (SELECT id FROM activity_logs ORDER BY id DESC LIMIT 15)")
+        cursor.execute("DELETE FROM activity_logs WHERE id NOT IN (SELECT id FROM activity_logs ORDER BY id DESC LIMIT 20)")
         db_conn.commit()
     except:
         pass
 
 # =====================================================================
-# 3. MESIN GENERATOR HARGA MANDIRI (ANTI-BLOKIR & ANTI-DELAY)
+# 3. PENARIK DATA CHART RIIL BURSA GLOBAL (BEBAS BLOKIR JARINGAN)
 # =====================================================================
-def generate_isolated_candles():
-    """Membangun pergerakan grafik koin mandiri untuk bypass blokir IP bursa"""
-    cursor = db_conn.cursor()
-    now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    
-    # Ambil harga terakhir di database untuk fluktuasi
-    cursor.execute("SELECT close FROM engine_candles ORDER BY id DESC LIMIT 1")
-    last_row = cursor.fetchone()
-    base_price = float(last_row[0]) if last_row else 1450000000.0 # Patokan harga awal BTC riil
-    
-    # Membuat fluktuasi harga mikro buatan komputer (+/- 0.05%)
-    fluctuation = np.random.uniform(-0.0005, 0.0005)
-    new_price = base_price * (1 + fluctuation)
-    
-    # Simpan ke tabel memori lokal
-    cursor.execute("INSERT INTO engine_candles (close, timestamp) VALUES (?, ?)", (new_price, now_str))
-    cursor.execute("DELETE FROM engine_candles WHERE id NOT IN (SELECT id FROM engine_candles ORDER BY id DESC LIMIT 50)")
-    db_conn.commit()
-    
-    df = pd.read_sql_query("SELECT close FROM engine_candles ORDER BY id ASC", db_conn)
-    return df, new_price
+def get_real_candles_4h():
+    """Mengambil grafik 4 jam riil pasar global pasang Rupiah untuk akurasi sinyal"""
+    try:
+        # Menggunakan KuCoin API publik internasional yang kebal firewall bursa lokal
+        url = "https://kucoin.com"
+        end_time = int(time.time())
+        start_time = end_time - (60 * 4 * 3600)
+        
+        params = {
+            'symbol': 'BTC-IDR',
+            'type': '4hour',  # Mengunci kerangka waktu 4 Jam (4h) sesuai TradingView Anda
+            'startAt': start_time,
+            'endAt': end_time
+        }
+        
+        response = requests.get(url, params=params, timeout=10)
+        res_json = response.json()
+        
+        if res_json.get('code') == '200000' and isinstance(res_json.get('data'), list):
+            data = res_json['data']
+            if len(data) > 25:
+                df_raw = pd.DataFrame(data)
+                df_cleaned = pd.DataFrame()
+                # Format KuCoin: 0=waktu, 1=open, 2=close, 3=high, 4=low
+                df_cleaned['close'] = df_raw[2].astype(float)
+                # Membalikkan baris agar urutan urut dari lampau ke kini
+                df_cleaned = df_cleaned.iloc[::-1].reset_index(drop=True)
+                return df_cleaned
+        return pd.DataFrame()
+    except:
+        return pd.DataFrame()
 
 def calculate_hma_20(df):
     if df.empty or len(df) < 22: return df
@@ -126,7 +131,7 @@ def get_indodax_balance():
     signature = hmac.new(bytes(SECRET_KEY, 'utf-8'), msg=bytes(query_string, 'utf-8'), digestmod=hashlib.sha512).hexdigest()
     headers = {"Key": API_KEY, "Sign": signature}
     try:
-        res = requests.post(url, data=payload, headers=headers, timeout=4).json()
+        res = requests.post(url, data=payload, headers=headers, timeout=5).json()
         if res.get('success') == 1 or res.get('success') == '1':
             return float(res['return']['balance']['idr'])
     except:
@@ -152,7 +157,7 @@ def execute_indodax_trade(action, amount_or_coin):
         return {"success": 0, "error": "Timeout"}
 
 # =====================================================================
-# 5. ENGINE UTAMA: KHUSUS MOCK TRACKING (100% ANTI-GAGAL JALUR)
+# 5. ENGINE UTAMA: DATA RIIL (EKSEKUSI PENUH)
 # =====================================================================
 def run_autonomous_engine():
     cursor = db_conn.cursor()
@@ -162,47 +167,49 @@ def run_autonomous_engine():
     
     saldo_saat_ini = get_indodax_balance()
     
-    # Membangun pergerakan lilin di database internal secara lokal (Lolos dari blokir firewall)
-    df, live_price_local = generate_isolated_candles()
+    # Menarik data market asli grafik internasional KuCoin (Bebas dari angka simulasi lokal)
+    df = get_real_candles_4h()
     
-    if len(df) < 22:
-        add_log_message(f"🔍 BTC/IDR | Status: ⏳ Menabung Database Lokal ({len(df)}/22)")
+    if df.empty:
+        add_log_message("🔍 BTC/IDR | Status: ❌ Mengulang Sambungan Data Riil")
         return
         
     df = calculate_hma_20(df)
     last_bar = df.iloc[-1]
     confirmed_bar = df.iloc[-2]
+    
     current_color = "Hijau (BUY)" if last_bar['is_green'] else "Merah (SELL)"
+    live_price_real = float(last_bar['close'])
     
     cursor.execute("SELECT last_signal, holding_amount FROM trades WHERE pair = 'BTC/IDR'")
     row = cursor.fetchone()
     last_signal = row[0] if row else "NONE"
     holding_amount = float(row[1]) if row else 0.0
     
-    # LAPORAN SINYAL AKTIF: Menerbitkan arah tren warna secara live di HP Anda tanpa eror internet
-    add_log_message(f"🔍 BTC/IDR | Sinyal Tren: {current_color} | Posisi SQLite: {last_signal}")
+    # CETAK LOG RIIL: Menunjukkan warna tren pasar yang sebenarnya (Saat ini Merah mengikuti 81.200 USD Anda)
+    add_log_message(f"🔍 BTC/IDR | Tren Pasar Riil: {current_color} | Posisi SQLite: {last_signal}")
     
     # BUY
     if confirmed_bar['raw_buy'] and last_signal != 'BUY':
         if saldo_saat_ini < MODAL_PER_TRANSAKSI_IDR:
-            add_log_message(f"⚠️ BTC/IDR | Sinyal: BUY | Status: 🛑 Saldo Dompet Rp {saldo_saat_ini:,.0f} Kurang")
+            add_log_message("⚠️ BTC/IDR | Sinyal: BUY | Status: 🛑 Saldo Dompet Kurang")
             return
         res = execute_indodax_trade("buy", MODAL_PER_TRANSAKSI_IDR)
         if res.get("success") == 1:
             return_receive = float(res['return'].get('receive_coin', 0.0))
-            coin_bought = return_receive if return_receive > 0 else (MODAL_PER_TRANSAKSI_IDR / live_price_local)
-            cursor.execute("INSERT OR REPLACE INTO trades VALUES ('BTC/IDR', 'BUY', ?, ?, ?)", (live_price_local, now_str, coin_bought))
-            cursor.execute("INSERT INTO history (pair, type, price, status, timestamp) VALUES ('BTC/IDR', 'BUY', ?, 'SUCCESS', ?)", (live_price_local, now_str))
+            coin_bought = return_receive if return_receive > 0 else (MODAL_PER_TRANSAKSI_IDR / live_price_real)
+            cursor.execute("INSERT OR REPLACE INTO trades VALUES ('BTC/IDR', 'BUY', ?, ?, ?)", (live_price_real, now_str, coin_bought))
+            cursor.execute("INSERT INTO history (pair, type, price, status, timestamp) VALUES ('BTC/IDR', 'BUY', ?, 'SUCCESS', ?)", (live_price_real, now_str))
             db_conn.commit()
             add_log_message("🚀 BTC/IDR | Aksi: BERHASIL BUY ORDER")
             
     # SELL
     elif confirmed_bar['raw_sell'] and last_signal == 'BUY':
-        coin_to_sell = holding_amount if holding_amount > 0 else (MODAL_PER_TRANSAKSI_IDR / live_price_local)
+        coin_to_sell = holding_amount if holding_amount > 0 else (MODAL_PER_TRANSAKSI_IDR / live_price_real)
         res = execute_indodax_trade("sell", coin_to_sell)
         if res.get("success") == 1:
-            cursor.execute("INSERT OR REPLACE INTO trades VALUES ('BTC/IDR', 'SELL', ?, ?, 0.0)", (live_price_local, now_str))
-            cursor.execute("INSERT INTO history (pair, type, price, status, timestamp) VALUES ('BTC/IDR', 'SELL', ?, 'SUCCESS', ?)", (live_price_local, now_str))
+            cursor.execute("INSERT OR REPLACE INTO trades VALUES ('BTC/IDR', 'SELL', ?, ?, 0.0)", (live_price_real, now_str))
+            cursor.execute("INSERT INTO history (pair, type, price, status, timestamp) VALUES ('BTC/IDR', 'SELL', ?, 'SUCCESS', ?)", (live_price_real, now_str))
             db_conn.commit()
             add_log_message("📉 BTC/IDR | Aksi: BERHASIL SELL ORDER")
 
@@ -231,10 +238,10 @@ live_data = []
 cursor.execute("SELECT last_signal, entry_price, holding_amount FROM trades WHERE pair = 'BTC/IDR'")
 row = cursor.fetchone()
 
-# Dapatkan harga live saat ini dari mesin generator database lokal Anda
+# Ambil harga berjalan asli dari KuCoin global
 cursor.execute("SELECT close FROM engine_candles ORDER BY id DESC LIMIT 1")
-local_price_row = cursor.fetchone()
-live_price = float(local_price_row[0]) if local_price_row else 1450000000.0
+df_price_check = get_real_candles_4h()
+live_price = float(df_price_check.iloc[-1]['close']) if not df_price_check.empty else 1400000000.0
 
 if row and str(row[0]) == 'BUY':
     entry_price = float(row[1])
@@ -267,7 +274,7 @@ total_pnl_pct = (akumulasi_pnl_idr / total_modal_aktif) * 100 if total_modal_akt
 saldo_idr_dompet = get_indodax_balance()
 
 # --- INTERFACE DISPLAY HP ---
-st.markdown("### 🛡️ Indodax Pro Server (Standalone)")
+st.markdown("### 🛡️ Indodax Pro Server (Jalur Riil Global)")
 col_w, col_s = st.columns(2)
 col_w.metric("Win Rate Bot", f"{win_rate:.1f}%")
 
@@ -311,7 +318,7 @@ if st.sidebar.button("💾 Terapkan Batas"):
     db_conn.commit()
     st.sidebar.success("Risiko Terkunci!")
 
-# Looping mandiri kilat aman (5 Detik)
+# Looping aman jalur internasional (60 Detik / 1 Menit)
 run_autonomous_engine()
-time.sleep(5)
+time.sleep(60)
 st.rerun()
