@@ -133,6 +133,25 @@ def get_live_market_price(pair):
         return None
 
 # =====================================================================
+# FETCH SALDO UTAMA AKTIF LEWAT PRIVATE ENDPOINT INDODAX
+# =====================================================================
+def get_indodax_balance():
+    """Mengambil sisa saldo Rupiah riil langsung dari dompet Indodax via getInfo"""
+    url = "https://indodax.com"
+    nonce = int(time.time() * 1000)
+    payload = {"method": "getInfo", "nonce": nonce}
+    query_string = requests.compat.urlencode(payload)
+    signature = hmac.new(bytes(SECRET_KEY, 'utf-8'), msg=bytes(query_string, 'utf-8'), digestmod=hashlib.sha512).hexdigest()
+    headers = {"Key": API_KEY, "Sign": signature}
+    try:
+        res = requests.post(url, data=payload, headers=headers, timeout=5).json()
+        if res.get('success') == 1:
+            return float(res['return']['balance']['idr'])
+    except:
+        pass
+    return 0.0
+
+# =====================================================================
 # 4. PRIVATE TRADE API INDODAX SIGNATURE (MARKET ORDER AUTOMATION)
 # =====================================================================
 def execute_indodax_trade(pair, action, amount_or_coin):
@@ -243,27 +262,15 @@ cursor.execute("SELECT last_run FROM settings LIMIT 1")
 last_run_time = cursor.fetchone()
 last_run_display = last_run_time[0] if last_run_time and last_run_time[0] else "Belum Berjalan"
 
-st.markdown("### 🛡️ Indodax Multi-Pair Pro Server")
-col1, col2 = st.columns(2)
-col1.metric("Win Rate Bot", f"{win_rate:.1f}%")
+# Ekstraksi dan kalkulasi gabungan seluruh aset untuk Modul Baru
+total_modal_aktif = 0.0
+total_valuasi_aktif = 0.0
+live_data = []
 
-if last_run_display and " " in last_run_display:
-    waktu_saja = last_run_display.split(" ")[1]
-    col2.metric("Server Terakhir Scan", str(waktu_saja))
-else:
-    col2.metric("Server Terakhir Scan", str(last_run_display))
-
-# =====================================================================
-# MODUL LIVE PROFIT: MENAMPILKAN SEMUA 5 ASET PERMANEN (PERBAIKAN TUPLE)
-# =====================================================================
-st.markdown("#### 📋 Status Posisi Semua Aset Aktif")
 try:
-    live_data = []
-    
     for pair in LIST_PAIRS:
         cursor.execute("SELECT last_signal, entry_price, holding_amount FROM trades WHERE pair = ?", (pair,))
         row = cursor.fetchone()
-        
         live_price = get_live_market_price(pair)
         
         if row and row[0] == 'BUY':
@@ -273,10 +280,13 @@ try:
             
             if live_price is None: live_price = entry_price
             
-            profit_pct = ((live_price - entry_price) / entry_price) * 100
             current_value_idr = holding_amount * live_price
             initial_value_idr = holding_amount * entry_price
             profit_idr = current_value_idr - initial_value_idr
+            profit_pct = ((live_price - entry_price) / entry_price) * 100
+            
+            total_modal_aktif += initial_value_idr
+            total_valuasi_aktif += current_value_idr
             sign = "+" if profit_idr >= 0 else ""
             
             profit_display = f"{sign}Rp {profit_idr:,.0f} ({sign}{profit_pct:.2f}%)"
@@ -286,26 +296,54 @@ try:
         else:
             posisi = "💤 CLEAN"
             if live_price is None: live_price = 0.0
-            
             entry_display = "-"
             saldo_coin_display = "0.000000"
             saldo_idr_display = "Rp 0"
             profit_display = "Rp 0 (0.00%)"
             
         live_data.append({
-            "Pair Aset": pair,
-            "Status": posisi,
-            "Harga Masuk": entry_display,
+            "Pair Aset": pair, "Status": posisi, "Harga Masuk": entry_display,
             "Harga Live": f"Rp {live_price:,.0f}" if live_price > 0 else "Delay API",
-            "Saldo Koin": saldo_coin_display,
-            "Valuasi (IDR)": saldo_idr_display,
-            "Live Floating Profit": profit_display
+            "Saldo Koin": saldo_coin_display, "Valuasi (IDR)": saldo_idr_display, "Live Floating Profit": profit_display
         })
-        
+except:
+    pass
+
+# Hitung Akumulasi Persentase Profit/Loss Gabungan Global
+akumulasi_pnl_idr = total_valuasi_aktif - total_modal_aktif
+if total_modal_aktif > 0:
+    total_pnl_pct = (akumulasi_pnl_idr / total_modal_aktif) * 100
+else:
+    total_pnl_pct = 0.0
+
+saldo_idr_dompet = get_indodax_balance()
+
+# --- BLOK TAMPILAN DASHBOARD HP UTAMA ---
+st.markdown("### 🛡️ Indodax Multi-Pair Pro Server")
+col_w, col_s = st.columns(2)
+col_w.metric("Win Rate Bot", f"{win_rate:.1f}%")
+col_s.metric("Server Terakhir Scan", last_run_display.split(" ")[1] if " " in last_run_display else last_run_display)
+
+# PEMBARUAN UTAMA: Blok Tampilan Saldo Utama & Akumulasi Persentase PNL Gabungan
+st.markdown("---")
+col_bal, col_pnl = st.columns(2)
+col_bal.metric("Saldo Utama IDR (Dompet)", f"Rp {saldo_idr_dompet:,.0f}")
+
+sign_global = "+" if akumulasi_pnl_idr >= 0 else ""
+if akumulasi_pnl_idr >= 0:
+    col_pnl.metric("Total Profit Gabungan", f"{sign_global}{total_pnl_pct:.2f}%", delta=f"Rp {akumulasi_pnl_idr:,.0f}")
+else:
+    col_pnl.metric("Total Loss Gabungan", f"{total_pnl_pct:.2f}%", delta=f"Rp {akumulasi_pnl_idr:,.0f}")
+st.markdown("---")
+
+# =====================================================================
+# MODUL LIVE PROFIT: MENAMPILKAN SEMUA 5 ASET PERMANEN
+# =====================================================================
+st.markdown("#### 📋 Status Posisi Semua Aset Aktif")
+if live_data:
     df_display = pd.DataFrame(live_data)
     st.dataframe(df_display, use_container_width=True, hide_index=True)
-        
-except Exception as database_error:
+else:
     st.write("🔄 *Sedang mengalkulasi tabel komparasi semua aset...*")
 
 # =====================================================================
