@@ -14,7 +14,6 @@ from datetime import datetime
 API_KEY = "KXFCXMGP-HXH2UXNK-9T1KRVO0-XCEZBKRR-HCIDLBUF"
 SECRET_KEY = "a423ce71c0c54f54899d0c03193865176b0b5d83b7826f51c3eea4b269ea553ed0087e69ac200d48"
 
-# Daftar Pair Sesuai Rangka Pro Anda
 LIST_PAIRS = ['BTC/IDR', 'ETH/IDR', 'USDT/IDR', 'SOL/IDR', 'DOGE/IDR']
 MODAL_PER_TRANSAKSI_IDR = 50000.0  # Rp 50.000 per eksekusi BUY pasar
 
@@ -152,14 +151,12 @@ def run_autonomous_engine():
         current_price = last_bar['close']
         current_volume_idr = last_bar['volume'] * current_price
         
-        # Eksekusi Filter Likuiditas
         if current_volume_idr < min_vol: continue
             
         cursor.execute("SELECT last_signal, holding_amount FROM trades WHERE pair = ?", (pair,))
         row = cursor.fetchone()
         last_signal, holding_amount = row if row else ("NONE", 0.0)
         
-        # 🟢 SINYAL BUY RIIL (HMA Hijau)
         if current_color == 'Green' and last_signal != 'BUY':
             res = execute_indodax_trade(pair, "buy", MODAL_PER_TRANSAKSI_IDR)
             if res.get("success") == 1:
@@ -169,7 +166,6 @@ def run_autonomous_engine():
                 cursor.execute("INSERT INTO history (pair, type, price, status, timestamp) VALUES (?, 'BUY', ?, 'SUCCESS', ?)", (pair, current_price, now_str))
                 db_conn.commit()
                 
-        # 🔴 SINYAL SELL RIIL (HMA Merah / Proteksi Gagal Repaint)
         elif current_color == 'Red' and last_signal == 'BUY':
             coin_to_sell = holding_amount if holding_amount > 0 else (MODAL_PER_TRANSAKSI_IDR / current_price)
             res = execute_indodax_trade(pair, "sell", coin_to_sell)
@@ -183,19 +179,26 @@ def run_autonomous_engine():
 # =====================================================================
 cursor = db_conn.cursor()
 cursor.execute("SELECT COUNT(*) FROM history WHERE type='SELL' AND status='SUCCESS'")
-total_win = cursor.fetchone()
+total_win_row = cursor.fetchone()
+total_win = total_win_row[0] if total_win_row else 0
+
 cursor.execute("SELECT COUNT(*) FROM history WHERE status='SUCCESS'")
-total_trades = cursor.fetchone()
-win_rate = (total_win / (total_trades / 2) * 100) if total_trades and total_trades > 1 else 100.0
+total_trades_row = cursor.fetchone()
+total_trades = total_trades_row[0] if total_trades_row else 0
+
+if total_trades > 1 and total_win > 0:
+    win_rate = (total_win / (total_trades / 2)) * 100
+else:
+    win_rate = 100.0
 
 cursor.execute("SELECT last_run FROM settings LIMIT 1")
 last_run_time = cursor.fetchone()
-last_run_display = last_run_time if last_run_time else "Menghubungkan..."
+last_run_display = last_run_time[0] if last_run_time else "Menghubungkan..."
 
 st.markdown("### 🛡️ Indodax Multi-Pair Pro Server")
 col1, col2 = st.columns(2)
 col1.metric("Win Rate Bot", f"{win_rate:.1f}%")
-col2.metric("Server Terakhir Scan", last_run_display.split(" ") if " " in last_run_display else last_run_display)
+col2.metric("Server Terakhir Scan", last_run_display.split(" ")[1] if " " in last_run_display else last_run_display)
 
 st.markdown("#### 📋 Running Trades (Status Posisi)")
 df_running = pd.read_sql_query("SELECT pair as 'Pair', last_signal as 'Posisi', entry_price as 'Harga Masuk', timestamp as 'Waktu Pemicu' FROM trades WHERE last_signal='BUY'", db_conn)
