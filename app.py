@@ -50,15 +50,19 @@ def save_setting(key, text_val="", num_val=0.0):
     conn.commit()
     conn.close()
 
-def get_setting(key, default_text="", default_num=0.0):
+# PERBAIKAN UTAMA: Fungsi get_setting diperbaiki agar mengembalikan nilai tunggal, bukan tuple
+def get_setting(key, default_text=None, default_num=None):
     conn = sqlite3.connect('trading_bot.db')
     cursor = conn.cursor()
     cursor.execute("SELECT val_text, val_num FROM settings WHERE key=?", (key,))
     row = cursor.fetchone()
     conn.close()
     if row:
-        return row if default_text != "" else row
-    return default_text if default_text != "" else default_num
+        if default_text is not None:
+            return row[0] if row[0] is not None else default_text
+        if default_num is not None:
+            return row[1] if row[1] is not None else default_num
+    return default_text if default_text is not None else default_num
 
 def get_trade_history(filter_type="Semua"):
     conn = sqlite3.connect('trading_bot.db')
@@ -105,11 +109,9 @@ init_db()
 TIMEFRAME = "4h"   # DIKUNCI MATI KE CHART 4 JAM
 HMA_LENGTH = 8     # DIKUNCI MATI KE PERIODE 8
 
-db_api = get_setting("api_key", default_text="-")
-db_api = "" if db_api == "-" else db_api
-db_secret = get_setting("secret_key", default_text="-")
-db_secret = "" if db_secret == "-" else db_secret
-
+# Memanggil get_setting yang sudah diperbaiki agar tidak menghasilkan TypeError
+db_api = get_setting("api_key", default_text="")
+db_secret = get_setting("secret_key", default_text="")
 db_symbol = get_setting("symbol", default_text="BTC/IDR")
 db_max_bars = int(get_setting("max_bars", default_num=100.0))
 db_tp_pct = get_setting("tp_pct", default_num=5.0)
@@ -206,7 +208,7 @@ def market_monitor_fragment():
     waktu_sekarang = datetime.now().strftime('%H:%M:%S')
     st.caption(f"🔄 Sinkronisasi Indodax (Setiap {refresh_rate_input} Detik): {waktu_sekarang}")
     
-    base_coin = symbol_input.split('/')[0]
+    base_coin = symbol_input.split('/')
     
     if api_input and secret_input:
         try:
@@ -215,7 +217,6 @@ def market_monitor_fragment():
             saldo_coin = balance['free'][base_coin] if base_coin in balance['free'] else 0.0
             st.info(f"💳 **Dompet Akun Real Anda:**  \n💵 Saldo Rupiah: **Rp {saldo_idr:,.0f}**  \n🪙 Sisa Koin ({base_coin}): **{saldo_coin:.6f} {base_coin}**")
         except Exception as bal_err:
-            # PERBAIKAN: st.sidebar diubah ke st agar aman dari error StreamlitAPIException
             st.error(f"⚠️ Gagal Memuat Saldo API Indodax: {bal_err}")
     else:
         st.info(f"🎮 **Dompet Kustom Simulasi:**  \n💵 Saldo Rupiah: **Rp {sim_balance_input:,.0f}**  \n🪙 Sisa Koin ({base_coin}): **0.000000 {base_coin}**")
