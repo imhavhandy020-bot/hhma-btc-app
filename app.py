@@ -10,7 +10,7 @@ from datetime import datetime
 # ==============================================================================
 st.set_page_config(page_title="Indodax Pro Bot", layout="wide", initial_sidebar_state="collapsed")
 
-# CSS Kustom untuk memaksimalkan tampilan Monitor Chrome HP
+# CSS Kustom untuk memaksimalkan tampilan Monitor Chrome HP (Sudah Diperbaiki)
 st.markdown("""
     <style>
     .reportview-container .main .block-container { padding-top: 1rem; padding-bottom: 1rem; }
@@ -19,7 +19,7 @@ st.markdown("""
     div[data-testid="stMetricValue"] { font-size: 20px !important; font-weight: bold; }
     div[data-testid="stMetricLabel"] { font-size: 12px !important; }
     </style>
-""", unsafe_base64=True)
+""", unsafe_allow_html=True)
 
 st.sidebar.title("📱 Kontrol Bot HP")
 st.sidebar.markdown("---")
@@ -109,7 +109,6 @@ def update_position(pair, status, buy_price, amount):
 # ==============================================================================
 def calculate_hma(series, period):
     import numpy as np
-    # Formula HMA = WMA(2*WMA(n/2) - WMA(n), sqrt(n))
     def wma(s, p):
         weights = np.arange(1, p + 1)
         return s.rolling(p).apply(lambda x: np.dot(x, weights) / weights.sum(), raw=True)
@@ -122,7 +121,7 @@ def calculate_hma(series, period):
     return hma
 
 def fetch_binance_4h_signals(pair):
-    # Mapping pair Indodax ke Binance Global (Contoh: BTC/IDR -> BTCUSDT sebagai acuan tren global)
+    # Mapping pair Indodax ke Binance Global (Contoh: BTC/IDR -> BTCUSDT)
     binance_symbol = pair.split('/')[0] + "USDT"
     url = f"https://binance.com{binance_symbol}&interval=4h&limit=50"
     
@@ -135,15 +134,13 @@ def fetch_binance_4h_signals(pair):
         # Hitung HMA-20
         df['hma_20'] = calculate_hma(df['close'], 20)
         
-        # OPTIMASI SINYAL: Mengunci konfirmasi data mati pada Bar [-2] (offset=-1 dari candle berjalan)
-        # Bar [-1] adalah candle running (belum fix). Bar [-2] adalah candle yang sudah closed sah.
+        # OPTIMASI SINYAL: Mengunci data pada Bar [-2] (offset=-1 dari candle berjalan)
         closed_price = df['close'].iloc[-2]
         hma_last_fixed = df['hma_20'].iloc[-2]
         hma_prev_fixed = df['hma_20'].iloc[-3]
         
-        volume_24h_usd = df['volume'].iloc[-7:].sum() * closed_price # Estimasi Kasar Volume harian
+        volume_24h_usd = df['volume'].iloc[-7:].sum() * closed_price
         
-        # Logika Sinyal Arah HMA
         if closed_price > hma_last_fixed and hma_last_fixed > hma_prev_fixed:
             signal = "BUY"
         elif closed_price < hma_last_fixed and hma_last_fixed < hma_prev_fixed:
@@ -156,9 +153,8 @@ def fetch_binance_4h_signals(pair):
         return "ERROR", 0.0, 0.0
 
 # ==============================================================================
-# 4. SIMULASI ENGINE SALDO UTAMA & AMBIL HARGA INDODAX
+# 4. ENGINE SALDO & INTEGRASI DATA INDODAX
 # ==============================================================================
-# Untuk demonstrasi, kita gunakan harga pasar riil via API Publik Indodax
 def get_indodax_data():
     try:
         res = requests.get("https://indodax.com", timeout=10).json()
@@ -167,7 +163,7 @@ def get_indodax_data():
         return {}
 
 indodax_tickers = get_indodax_data()
-saldo_idr_dompet = 1500000.0 # Simulasi Saldo Dompet Riil Utama IDR Rp1.500.000
+saldo_idr_dompet = 1500000.0
 
 # ==============================================================================
 # 5. LAYAR UTAMA MONITOR CHROME HP (VISUAL OPTIMIZED)
@@ -177,7 +173,6 @@ st.title("📊 Multi-Pair Pro Monitor")
 # Baris 1 Visual HP: Widget Ringkasan Utama (Metrik Pendek)
 col1, col2, col3 = st.columns(3)
 
-# Perhitungan Win Rate & Profit/Loss Gabungan Global dari DB/Simulasi
 win_rate_sim = 68.5 
 total_profit_idr = 125000.0
 total_profit_pct = 8.33
@@ -207,13 +202,12 @@ for idx, row in df_positions.iterrows():
         
     # Eksekusi Logika Sinyal & Sistem Rem Saldo Otomatis
     if current_status == 'WAITING_BUY' and signal == 'BUY':
-        if saldo_idr_dompet >= modal_per_trade: # Gunakan variabel fitur baru
+        if saldo_idr_dompet >= modal_per_trade:
             amount_to_buy = modal_per_trade / target_price
             saldo_idr_dompet -= modal_per_trade
             update_position(pair, 'HOLDING_SELL', target_price, amount_to_buy)
             add_log(pair, 'BUY', f"Membeli menggunakan modal Rp{modal_per_trade:,.0f} pada harga Rp{target_price:,.2f}")
         else:
-            # Rem Saldo Otomatis aktif
             add_log(pair, 'SKIP', "Gagal BUY: Saldo IDR tidak mencukupi modal per transaksi!")
             
     elif current_status == 'HOLDING_SELL' and signal == 'SELL':
@@ -230,6 +224,6 @@ st.table(get_positions())
 st.subheader("📜 Log Aktivitas Server")
 st.table(get_logs())
 
-# Autorefresh halaman via Streamlit untuk simulasi realtime di layar Chrome HP
-time.sleep(1)
+# Autorefresh halaman via Streamlit untuk monitor HP
+time.sleep(5)
 st.rerun()
