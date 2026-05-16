@@ -3,10 +3,13 @@ import pandas as pd
 import sqlite3
 import requests
 import time
+import hmac
+import hashlib
+import urllib.parse
 from datetime import datetime
 
 # ==============================================================================
-# 1. KONFIGURASI LAYAR & SIDEBAR HP
+# 1. KONFIGURASI LAYAR & SIDEBAR HP (ANTI-RESET SESSION)
 # ==============================================================================
 st.set_page_config(page_title="Indodax Pro Bot", layout="wide", initial_sidebar_state="collapsed")
 
@@ -24,24 +27,36 @@ st.markdown("""
 st.sidebar.title("📱 Kontrol Bot HP")
 st.sidebar.markdown("---")
 
-# FITUR BARU: Input modal dinamis per transaksi
+# Mengunci nilai agar tidak hilang/reset saat autorefresh menggunakan Session State
+if "modal_trade" not in st.session_state:
+    st.session_state.modal_trade = 50000
+if "min_vol" not in st.session_state:
+    st.session_state.min_vol = 50000000  # Default dikunci ke 50.000.000 sesuai permintaan
+
 modal_per_trade = st.sidebar.number_input(
     "Modal per Transaksi (IDR)", 
     min_value=10000, 
-    value=50000, 
+    value=st.session_state.modal_trade, 
     step=5000,
-    help="Jumlah IDR yang digunakan untuk setiap eksekusi order BUY."
+    key="modal_input"
 )
+st.session_state.modal_trade = modal_per_trade
 
-min_volume_24h = st.sidebar.number_input("Min Vol 24J (USD)", min_value=0, value=50000, step=10000)
-bot_loop_interval = st.sidebar.slider("Interval Cek Bot (Menit)", min_value=1, max_value=60, value=5)
+min_volume_24h = st.sidebar.number_input(
+    "Min Vol 24J (USD)", 
+    min_value=0, 
+    value=st.session_state.min_vol, 
+    step=1000000,
+    key="vol_input"
+)
+st.session_state.min_vol = min_volume_24h
 
-# Simulasi API Key Aman
-API_KEY = st.sidebar.text_input("Indodax API Key", value="INTEGRATED_SECURE_KEY", type="password")
-API_SECRET = st.sidebar.text_input("Indodax Secret Key", value="INTEGRATED_SECURE_SECRET", type="password")
+# Input API Key Riil untuk Penarikan Saldo
+api_key_input = st.sidebar.text_input("Indodax API Key", value="", type="password", help="Masukkan API Key dari akun Indodax Anda")
+api_secret_input = st.sidebar.text_input("Indodax Secret Key", value="", type="password", help="Masukkan Secret Key dari akun Indodax Anda")
 
 # ==============================================================================
-# 2. INISIALISASI DATABASE & MANAJEMEN KONEKSI AMAN (ANTI-LOCK)
+# 2. INISIALISASI DATABASE & MANAJEMEN KONEKSI AMAN
 # ==============================================================================
 DB_FILE = 'trading_bot.db'
 
@@ -51,7 +66,6 @@ def get_db_connection():
 def init_db():
     with get_db_connection() as conn:
         cursor = conn.cursor()
-        # Tabel Posisi Permanen 5 Aset
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS positions (
                 pair TEXT PRIMARY KEY,
@@ -61,7 +75,6 @@ def init_db():
                 last_update TEXT
             )
         """)
-        # Tabel Log Aktivitas
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS activity_logs (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -71,35 +84,30 @@ def init_db():
                 message TEXT
             )
         """)
-        
-        # Isi data awal 5 aset permanen jika belum ada
         permanent_pairs = ['BTC/IDR', 'ETH/IDR', 'USDT/IDR', 'SOL/IDR', 'DOGE/IDR']
         for pair in permanent_pairs:
             cursor.execute("INSERT OR IGNORE INTO positions VALUES (?, ?, ?, ?, ?)", 
                            (pair, 'WAITING_BUY', 0.0, 0.0, datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
         conn.commit()
 
-# Jalankan inisialisasi basis data pertama kali
 init_db()
 
 def get_positions():
     try:
         with get_db_connection() as conn:
-            # Perbaikan sintaks alias SQL menggunakan standard double quotes
             query = 'SELECT pair as "Aset", status as "Status", buy_price as "Harga Beli", amount as "Jumlah", last_update as "Waktu Update" FROM positions'
             df = pd.read_sql_query(query, conn)
         return df
-    except Exception as e:
+    except Exception:
         return pd.DataFrame(columns=["Aset", "Status", "Harga Beli", "Jumlah", "Waktu Update"])
 
 def get_logs():
     try:
         with get_db_connection() as conn:
-            # Perbaikan sintaks alias SQL menggunakan standard double quotes untuk menghindari Pandas Error
             query = 'SELECT timestamp as "Waktu", pair as "Aset", action as "Aksi", message as "Detail" FROM activity_logs ORDER BY id DESC LIMIT 10'
             df = pd.read_sql_query(query, conn)
         return df
-    except Exception as e:
+    except Exception:
         return pd.DataFrame(columns=["Waktu", "Aset", "Aksi", "Detail"])
 
 def add_log(pair, action, message):
@@ -109,7 +117,7 @@ def add_log(pair, action, message):
             cursor.execute("INSERT INTO activity_logs (timestamp, pair, action, message) VALUES (?, ?, ?, ?)",
                            (datetime.now().strftime('%H:%M:%S'), pair, action, message))
             conn.commit()
-    except Exception as e:
+    except Exception:
         pass
 
 def update_position(pair, status, buy_price, amount):
@@ -119,11 +127,45 @@ def update_position(pair, status, buy_price, amount):
             cursor.execute("UPDATE positions SET status=?, buy_price=?, amount=?, last_update=? WHERE pair=?",
                            (status, buy_price, amount, datetime.now().strftime('%Y-%m-%d %H:%M:%S'), pair))
             conn.commit()
-    except Exception as e:
+    except Exception:
         pass
 
 # ==============================================================================
-# 3. KONEKSI DATA CHART BINANCE GLOBAL & OPTIMASI LOGIKA HMA-20
+# 3. ENGINE KONEKSI API RIIL INDODAX (GET BALANCE RIIL)
+# ==============================================================================
+def fetch_indodax_real_balance(api_key, api_secret):
+    """Mengambil saldo rupiah riil langsung dari akun Indodax Anda via Private API"""
+    if not api_key or not api_secret:
+        return 0.0, "API Key Kosong (Simulasi Aktif)"
+        
+    try:
+        # Pembuatan payload tanda tangan resmi sesuai dokumentasi Indodax Private RestAPI
+        payload = {
+            'method': 'getInfo',
+            'timestamp': int(time.time() * 1000)
+        }
+        post_data = urllib.parse.urlencode(payload)
+        sign = hmac.new(api_secret.encode('utf-8'), post_data.encode('utf-8'), hashlib.sha512).hexdigest()
+        
+        headers = {
+            'Sign': sign,
+            'Key': api_key
+        }
+        
+        response = requests.post("https://indodax.com", data=payload, headers=headers, timeout=10).json()
+        
+        if response.get('success') == 1:
+            # Mengambil saldo utama dalam bentuk Rupiah (IDR)
+            balances = response['return']['balance']
+            idr_balance = float(balances.get('idr', 0))
+            return idr_balance, "Koneksi Riil Sukses"
+        else:
+            return 0.0, f"Gagal API: {response.get('error', 'Kunci Salah')}"
+    except Exception as e:
+        return 0.0, f"Error Link: {str(e)}"
+
+# ==============================================================================
+# 4. KONEKSI DATA CHART BINANCE GLOBAL & OPTIMASI LOGIKA HMA-20
 # ==============================================================================
 def calculate_hma(series, period):
     import numpy as np
@@ -133,10 +175,8 @@ def calculate_hma(series, period):
     
     half_period = int(period / 2)
     sqrt_period = int(np.sqrt(period))
-    
     raw_hma = 2 * wma(series, half_period) - wma(series, period)
-    hma = wma(raw_hma, sqrt_period)
-    return hma
+    return wma(raw_hma, sqrt_period)
 
 def fetch_binance_4h_signals(pair):
     clean_pair = pair.replace('/IDR', '')
@@ -165,26 +205,20 @@ def fetch_binance_4h_signals(pair):
             signal = "HOLD"
             
         return signal, closed_price, volume_24h_usd
-    except Exception as e:
+    except Exception:
         return "ERROR", 0.0, 0.0
 
 # ==============================================================================
-# 4. ENGINE DATA PASAR
-# ==============================================================================
-def get_indodax_data():
-    try:
-        res = requests.get("https://indodax.com", timeout=10).json()
-        return res.get('tickers', {})
-    except:
-        return {}
-
-indodax_tickers = get_indodax_data()
-saldo_idr_dompet = 1500000.0
-
-# ==============================================================================
-# 5. LAYAR UTAMA MONITOR CHROME HP (VISUAL OPTIMIZED)
+# 5. EXECUTION & VISUAL MONITOR CHROME HP
 # ==============================================================================
 st.title("📊 Multi-Pair Pro Monitor")
+
+# Panggil fungsi saldo riil Indodax
+saldo_idr_dompet, status_api_pesan = fetch_indodax_real_balance(api_key_input, api_secret_input)
+
+# Jika API belum diisi, gunakan fallback simulasi agar bot tidak Rp0 total saat kosong
+if "API Kosong" in status_api_pesan:
+    saldo_idr_dompet = 1500000.0
 
 col1, col2, col3 = st.columns(3)
 win_rate_sim = 68.5 
@@ -194,13 +228,13 @@ total_profit_pct = 8.33
 with col1:
     st.metric("Win Rate", f"{win_rate_sim}%")
 with col2:
-    st.metric("Saldo IDR", f"Rp {saldo_idr_dompet:,.0f}")
+    st.metric("Saldo IDR", f"Rp {saldo_idr_dompet:,.0f}", delta=status_api_pesan)
 with col3:
     st.metric("Total Profit/Loss", f"Rp {total_profit_idr:+,.0f}", f"{total_profit_pct:+.2f}%")
 
 st.markdown("---")
 
-# Eksekusi Logika Sinyal & Sistem Rem Saldo Otomatis
+# Jalankan Logika Otomatisasi Rem Saldo
 df_positions = get_positions()
 
 if not df_positions.empty and "Aset" in df_positions.columns:
@@ -210,6 +244,7 @@ if not df_positions.empty and "Aset" in df_positions.columns:
         
         signal, target_price, vol_24h = fetch_binance_4h_signals(pair)
         
+        # Cek Filter Volume 24 Jam
         if vol_24h < min_volume_24h and signal != "ERROR":
             continue
             
@@ -228,13 +263,13 @@ if not df_positions.empty and "Aset" in df_positions.columns:
             update_position(pair, 'WAITING_BUY', 0.0, 0.0)
             add_log(pair, 'SELL', f"Menjual seluruh aset ekivalen Rp{payout:,.0f} pada harga Rp{target_price:,.2f}")
 
-# Menampilkan data tabel secara aman di HP
+# Menampilkan tabel data akhir monitor HP
 st.subheader("📌 Status Posisi 5 Aset Permanen")
 st.table(get_positions())
 
 st.subheader("📜 Log Aktivitas Server")
 st.table(get_logs())
 
-# Autorefresh aman untuk kestabilan SQLite Streamlit Cloud
+# Autorefresh aman untuk layar HP Chrome
 time.sleep(5)
 st.rerun()
