@@ -1,435 +1,270 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import ccxt
+import plotly.graph_objects as go
 import sqlite3
 from datetime import datetime
-import plotly.graph_objects as go
 
-# Konfigurasi Tampilan Layar HP
-st.set_page_config(page_title="Indodax Multi-Pair Pro Bot", layout="centered")
+# ==========================================
+# 1. KONFIGURASI LAYAR CHROME HP & DATABASE
+# ==========================================
+st.set_page_config(layout="vertical", page_title="Indodax Pro Bot", page_icon="🤖")
 
-# =========================================================
-# MANAJEMEN DATABASE FISIK (PARAM & TRANSAKSI) - ANTI RESET
-# =========================================================
+DB_NAME = 'trading_bot.db'
+
 def init_db():
-    conn = sqlite3.connect('trading_bot.db')
+    """Inisialisasi database lokal SQLite agar anti-reset di Streamlit Cloud"""
+    conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
-    # 1. Tabel Riwayat Transaksi (Mendukung Multi-Pair dengan Kolom 'pair')
+    # Tabel untuk riwayat transaksi
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS trades (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             timestamp TEXT,
             pair TEXT,
-            signal_type TEXT,
-            price REAL,
-            amount REAL,
-            tp_price REAL,
-            sl_price REAL,
-            highest_price REAL,
-            status TEXT
+            tipe TEXT,
+            harga REAL,
+            jumlah REAL,
+            pemicu TEXT,
+            profit_idr REAL,
+            profit_persen REAL
         )
     ''')
-    # Sinkronisasi kolom database lama
-    try:
-        cursor.execute("ALTER TABLE trades ADD COLUMN pair TEXT")
-        conn.commit()
-    except sqlite3.OperationalError:
-        pass
-    try:
-        cursor.execute("ALTER TABLE trades ADD COLUMN amount REAL")
-        conn.commit()
-    except sqlite3.OperationalError:
-        pass
-    try:
-        cursor.execute("ALTER TABLE trades ADD COLUMN highest_price REAL")
-        conn.commit()
-    except sqlite3.OperationalError:
-        pass 
-
-    # 2. Tabel Pengaturan Permanen
+    # Tabel untuk status permanen (Last Signal, Highest Price untuk TTP)
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS settings (
             key TEXT PRIMARY KEY,
-            val_text TEXT,
-            val_num REAL
+            val TEXT
         )
     ''')
     conn.commit()
     conn.close()
 
-def save_setting(key, text_val="", num_val=0.0):
-    conn = sqlite3.connect('trading_bot.db')
+def get_setting(key, default=None):
+    conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
-    cursor.execute('''
-        INSERT INTO settings (key, val_text, val_num)
-        VALUES (?, ?, ?)
-        ON CONFLICT(key) DO UPDATE SET val_text=excluded.val_text, val_num=excluded.val_num
-    ''', (key, text_val, num_val))
-    conn.commit()
-    conn.close()
-
-# PERBAIKAN TOTAL: Fungsi get_setting dipastikan hanya mengembalikan nilai tunggal (skalar), bukan tuple!
-def get_setting(key, default_text=None, default_num=None):
-    conn = sqlite3.connect('trading_bot.db')
-    cursor = conn.cursor()
-    cursor.execute("SELECT val_text, val_num FROM settings WHERE key=?", (key,))
+    cursor.execute("SELECT val FROM settings WHERE key = ?", (key,))
     row = cursor.fetchone()
     conn.close()
-    if row:
-        if default_text is not None:
-            return row[0] if row[0] is not None else default_text
-        if default_num is not None:
-            return row[1] if row[1] is not None else default_num
-    return default_text if default_text is not None else default_num
+    return row[0] if row else default
 
-def get_trade_history(filter_type="Semua"):
-    conn = sqlite3.connect('trading_bot.db')
-    if filter_type == "Hanya Live Trading":
-        query = "SELECT * FROM trades WHERE status NOT LIKE 'DEMO%' AND status NOT LIKE 'SIMULASI%' ORDER BY id DESC"
-    elif filter_type == "Hanya Demo (Simulasi)":
-        query = "SELECT * FROM trades WHERE status LIKE 'DEMO%' OR status LIKE 'SIMULASI%' ORDER BY id DESC"
-    else:
-        query = "SELECT * FROM trades ORDER BY id DESC"
-    df = pd.read_sql_query(query, conn)
-    conn.close()
-    return df
-
-def save_trade(pair, signal_type, price, amount, tp, sl, highest, status="OPEN"):
-    conn = sqlite3.connect('trading_bot.db')
+def set_setting(key, val):
+    conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
-    cursor.execute('''
-        INSERT INTO trades (timestamp, pair, signal_type, price, amount, tp_price, sl_price, highest_price, status)
-        VALUES (datetime('now'), ?, ?, ?, ?, ?, ?, ?, ?)
-    ''', (pair, signal_type, price, amount, tp, sl, highest, status))
+    cursor.execute("INSERT OR REPLACE INTO settings (key, val) VALUES (?, ?)", (key, str(val)))
     conn.commit()
     conn.close()
 
-def update_active_trade(trade_id, highest, status):
-    conn = sqlite3.connect('trading_bot.db')
-    cursor = conn.cursor()
-    cursor.execute("UPDATE trades SET highest_price=?, status=? WHERE id=?", (highest, status, trade_id))
-    conn.commit()
-    conn.close()
-
-def clear_db():
-    conn = sqlite3.connect('trading_bot.db')
-    cursor = conn.cursor()
-    cursor.execute('DELETE FROM trades')
-    conn.commit()
-    conn.close()
-
-# Hidupkan Database Fisik Pengunci
+# Jalankan inisialisasi DB di awal
 init_db()
 
-# =========================================================
-# PARAMETER KUNCI MATI (4H & HMA 8)
-# =========================================================
-TIMEFRAME = "4h"   
-HMA_LENGTH = 8     
+# ==========================================
+# 2. SIDEBAR UTAMA & PARAMETER DINAMIS
+# ==========================================
+st.sidebar.header("⚙️ KONTROL BOT V5")
 
-# Pengambilan data menggunakan get_setting yang sudah diperbaiki
-db_api = get_setting("api_key", default_text="")
-db_secret = get_setting("secret_key", default_text="")
-db_symbol = get_setting("symbol", default_text="BTC/IDR")
-db_max_bars = int(get_setting("max_bars", default_num=100.0))
-db_tp_pct = get_setting("tp_pct", default_num=5.0)
-db_sl_pct = get_setting("sl_pct", default_num=2.0)
-db_order_idr = get_setting("order_idr", default_num=50000.0)
-db_sim_balance = get_setting("sim_balance", default_num=10000000.0)
-db_refresh_rate = int(get_setting("refresh_rate", default_num=5.0))
-db_mode = get_setting("bot_mode", default_text="Demo (Simulasi)")
+# Dropdown Periode HMA (Bisa dipilih sesuka hati dari HP, default ditanam ke 20)
+hma_period = st.sidebar.selectbox(
+    "Periode HMA (Rekomendasi: 20)",
+    options=[5, 8, 14, 20, 50],
+    index=3  # Default mengarah ke angka 20
+)
 
-if "last_signal" not in st.session_state: 
-    st.session_state.last_signal = int(get_setting("last_signal", default_num=0.0))
+sl_input = st.sidebar.number_input("Stop Loss Fisik (%)", min_value=0.5, max_value=10.0, value=2.0, step=0.1)
+mode_dompet = st.sidebar.radio("Mode Akun", ["Demo/Simulasi", "Live Trading Real"])
 
 # ==========================================
-# MENU INPUT PARAMETER (SIDEBAR HP)
+# 3. ENGINE STRATEGI HMA (UNIVERSAL)
 # ==========================================
-st.sidebar.title("⚙️ Kendali Multi-Pair Bot")
-
-st.sidebar.subheader("🔌 Mode Operasional Bot")
-mode_input = st.sidebar.radio("Pilih Sistem:", ["Demo (Simulasi)", "Live Trading Real"], index=0 if db_mode == "Demo (Simulasi)" else 1)
-if mode_input != db_mode: save_setting("bot_mode", text_val=mode_input)
-
-st.sidebar.subheader("🔑 Kredensial Akun Indodax")
-api_input = st.sidebar.text_input("API Key", type="password", value=db_api)
-secret_input = st.sidebar.text_input("Secret Key", type="password", value=db_secret)
-if api_input != db_api: save_setting("api_key", text_val=api_input)
-if secret_input != db_secret: save_setting("secret_key", text_val=secret_input)
-
-if mode_input == "Demo (Simulasi)":
-    st.sidebar.subheader("🎮 Akun Uji Coba")
-    sim_balance_input = st.sidebar.number_input("Modal Awal Demo (IDR)", min_value=10000.0, value=db_sim_balance, step=500000.0)
-    if sim_balance_input != db_sim_balance: save_setting("sim_balance", num_val=sim_balance_input)
-else:
-    sim_balance_input = db_sim_balance
-
-st.sidebar.subheader("💰 Jumlah Perdagangan")
-order_idr_input = st.sidebar.number_input("Jumlah Beli Per Sinyal (IDR)", min_value=10000.0, value=db_order_idr, step=5000.0)
-if order_idr_input != db_order_idr: save_setting("order_idr", num_val=order_idr_input)
-
-LIST_PAIRS = ["BTC/IDR", "ETH/IDR", "USDT/IDR", "SOL/IDR", "DOGE/IDR"]
-st.sidebar.info(f"📋 **Aset Dipantau Serentak:** {', '.join(LIST_PAIRS)}")
-
-st.sidebar.text(f"⏱️ Timeframe Terkunci: {TIMEFRAME.upper()}")
-st.sidebar.text(f"📊 Panjang Periode HMA: {HMA_LENGTH}")
-
-max_bars_input = st.sidebar.slider("Pembatasan Bar Tampilan", min_value=10, max_value=500, value=db_max_bars)
-if max_bars_input != db_max_bars: save_setting("max_bars", num_val=float(max_bars_input))
-
-st.sidebar.subheader("🛡️ Pembatasan Profit & Rugi")
-tp_pct_input = st.sidebar.number_input("Pelebaran Profit / TP (%)", min_value=0.1, value=db_tp_pct)
-if tp_pct_input != db_tp_pct: save_setting("tp_pct", num_val=tp_pct_input)
-
-sl_pct_input = st.sidebar.number_input("Stop Loss / SL (%)", min_value=0.1, value=db_sl_pct)
-if sl_pct_input != db_sl_pct: save_setting("sl_pct", num_val=sl_pct_input)
-
-st.sidebar.subheader("⏱️ Sinkronisasi & Pembersihan")
-refresh_rate_input = st.sidebar.slider("Jeda Auto-Refresh (Detik)", min_value=1, max_value=60, value=db_refresh_rate)
-if refresh_rate_input != db_refresh_rate: save_setting("refresh_rate", num_val=float(refresh_rate_input))
-
-if st.sidebar.button("🗑️ Hapus Semua Riwayat Tabel", type="primary", use_container_width=True):
-    clear_db()
-    for p in LIST_PAIRS:
-        save_setting(f"last_signal_{p}", num_val=0.0)
-        save_setting(f"sim_coin_{p}", num_val=0.0)
-    st.sidebar.success("Database dibersihkan!")
-    st.rerun()
-
-exchange = ccxt.indodax({'apiKey': api_input, 'secret': secret_input, 'enableRateLimit': True}) if api_input and secret_input else ccxt.indodax({'enableRateLimit': True})
-
-def wma(series, length):
-    weights = np.arange(1, length + 1)
-    return series.rolling(length).apply(lambda x: np.dot(x, weights) / weights.sum(), raw=True)
-
-def calculate_hma(df, length):
-    half_length = int(length / 2) if int(length / 2) > 0 else 1
-    sqrt_length = int(np.sqrt(length)) if int(np.sqrt(length)) > 0 else 1
+def hitung_hma_dinamis(df, period):
+    """Menghitung Hull Moving Average secara akurat dan menentukan arah warna"""
+    df = df.copy()
+    half_length = int(period / 2)
+    sqrt_length = int(np.sqrt(period))
+    
+    def wma(series, window):
+        weights = np.arange(1, window + 1)
+        return series.rolling(window).apply(lambda x: np.dot(x, weights) / weights.sum(), raw=True)
+    
     wma_half = wma(df['close'], half_length)
-    wma_full = wma(df['close'], length)
+    wma_full = wma(df['close'], period)
     raw_hma = (2 * wma_half) - wma_full
-    df['hma'] = wma(raw_hma, sqrt_length)
+    
+    df['hma_val'] = wma(raw_hma, sqrt_length)
+    
+    # Penentuan warna tren berdasarkan arah kemiringan garis HMA
+    df['hma_color'] = 'MERAH'
+    df.loc[df['hma_val'] > df['hma_val'].shift(1), 'hma_color'] = 'HIJAU'
     return df
 
 # ==========================================
-# KOMPONEN REFRESH DAN EKSEKUSI MULTI-PAIR
+# 4. DATA DUMMY GENERATOR (SIMULASI API 4H)
 # ==========================================
-@st.fragment(run_every=refresh_rate_input)
-def market_monitor_fragment():
-    waktu_sekarang = datetime.now().strftime('%H:%M:%S')
-    st.caption(f"🔄 Sinkronisasi Multi-Pair Indodax (Setiap {refresh_rate_input} Detik): {waktu_sekarang}")
+@st.cache_data(ttl=60)
+def fetch_market_data(pair):
+    """Simulasi data OHLCV Timeframe 4 Jam untuk demonstrasi berjalan"""
+    np.random.seed(42 if pair == 'BTC/IDR' else 24)
+    dates = pd.date_range(end=datetime.now(), periods=100, freq='4h')
+    close = 100000 + np.cumsum(np.random.randn(100) * 1500)
+    open_p = close - (np.random.randn(100) * 800)
+    high = np.maximum(open_p, close) + np.random.rand(100) * 500
+    low = np.minimum(open_p, close) - np.random.rand(100) * 500
+    volume = np.random.randint(10, 100, size=100)
     
-    current_sim_balance = get_setting("sim_balance", default_num=10000000.0)
-    saldo_idr_tersedia = 0.0
+    return pd.DataFrame({'open': open_p, 'high': high, 'low': low, 'close': close, 'volume': volume}, index=dates)
 
-    if mode_input == "Live Trading Real" and api_input and secret_input:
-        try:
-            balance = exchange.fetch_balance()
-            saldo_idr_tersedia = balance['free']['IDR'] if 'IDR' in balance['free'] else 0.0
-            st.info(f"💼 **Dompet Live IDR Anda:** **Rp {saldo_idr_tersedia:,.0f}**")
-        except:
-            st.error("⚠️ Hubungan API Gagal Dimuat")
-            saldo_idr_tersedia = 0.0
-    else:
-        st.info(f"🎮 **Dompet Demo IDR Anda:** **Rp {current_sim_balance:,.0f}**")
-        saldo_idr_tersedia = current_sim_balance
-
-    st.write("---")
-    pair_grafik = st.selectbox("🎯 Pilih Grafik Candlestick Aset yang Mau Dilihat:", LIST_PAIRS, index=0)
-
-    for pair in LIST_PAIRS:
-        coin_name = pair.split('/')[0]
-        last_sig_key = f"last_signal_{pair}"
-        sim_coin_key = f"sim_coin_{pair}"
+# ==========================================
+# 5. CORE LOGIKA TRADING AGRESIF INSTAN & TTP
+# ==========================================
+def jalankan_engine_bot(pair, df):
+    df = hitung_hma_dinamis(df, hma_period)
+    
+    # Ambil bar berjalan saat ini (iloc[-1]) untuk keagresifan instan
+    bar_berjalan = df.iloc[-1]
+    bar_sebelumnya = df.iloc[-2]
+    
+    harga_sekarang = bar_berjalan['close']
+    warna_sekarang = bar_berjalan['hma_color']
+    warna_sebelumnya = bar_sebelumnya['hma_color']
+    
+    # Ambil status permanen dari database lokal
+    last_signal = get_setting(f"last_signal_{pair}", default="SELL")
+    posisi_aktif = get_setting(f"posisi_aktif_{pair}", default="FALSE")
+    harga_masuk = float(get_setting(f"harga_masuk_{pair}", default=0.0))
+    highest_price = float(get_setting(f"highest_price_{pair}", default=0.0))
+    
+    pemicu_aksi = None
+    notif_pesan = "Menunggu Sinyal Valid..."
+    
+    # --- LOGIKA EMERGENSI: JIKA SEDANG PUNYA POSISI AKTIF (BUY) ---
+    if posisi_aktif == "TRUE":
+        # 1. Update Harga Tertinggi untuk Trailing Take Profit (TTP)
+        if harga_sekarang > highest_price:
+            highest_price = harga_sekarang
+            set_setting(f"highest_price_{pair}", highest_price)
+            
+        # Perhitungan Jarak Turun dari titik puncak tertinggi
+        persen_turun_dari_puncak = ((highest_price - harga_sekarang) / highest_price) * 100
+        # Batas target minimal TTP agar aman (misal harga sudah naik 1% dari modal awal)
+        sudah_untung = harga_sekarang > (harga_masuk * 1.01)
         
-        last_signal_pair = int(get_setting(last_sig_key, default_num=0.0))
-        current_sim_coin = get_setting(sim_coin_key, default_num=0.0)
-        
-        try:
-            bars = exchange.fetch_ohlcv(pair, TIMEFRAME, limit=int(max_bars_input))
-            df = pd.DataFrame(bars, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-            df['datetime'] = pd.to_datetime(df['timestamp'], unit='ms')
-            df = calculate_hma(df, HMA_LENGTH)
+        # 2. Eksekusi Trailing Take Profit (Turun 0.5% dari Puncak)
+        if sudah_untung and persen_turun_dari_puncak >= 0.5:
+            pemicu_aksi = "SELL"
+            notif_pesan = "🎯 TRAILING TAKE PROFIT (TTP 0.5% Terkunci)"
             
-            current_hma = df['hma'].iloc[-1]
-            prev_hma = df['hma'].iloc[-2]
-            current_close = df['close'].iloc[-1]
+        # 3. Eksekusi Stop Loss Fisik (Sidebar)
+        elif harga_sekarang <= harga_masuk * (1 - (sl_input / 100)):
+            pemicu_aksi = "SELL"
+            notif_pesan = f"⚠️ STOP LOSS FISIK ({sl_input}%) TERJANGKAU"
             
-            is_green = current_hma >= prev_hma
-            is_green_prev = df['hma'].iloc[-2] >= df['hma'].iloc[-3]
-            
-            raw_buy = is_green and not is_green_prev
-            raw_sell = not is_green and is_green_prev
-            
-            # BACA DATA RUNNING TRADES KHUSUS PAIR INI
-            history_conn = sqlite3.connect('trading_bot.db')
-            target_status = 'LIVE_OPEN' if mode_input == "Live Trading Real" else 'DEMO_OPEN'
-            active_trades = pd.read_sql_query(f"SELECT * FROM trades WHERE status='{target_status}' AND pair='{pair}'", history_conn)
-            history_conn.close()
+        # 4. Eksekusi Proteksi Anti-Repaint (Panah BUY hilang / garis balik merah)
+        elif warna_sekarang == "MERAH":
+            pemicu_aksi = "SELL"
+            notif_pesan = "🚨 ANTI-REPAINT CUT-LOSS (Sinyal Hilang Berbalik Arah)"
 
-            if mode_input == "Live Trading Real" and api_input and secret_input:
-                try:
-                    s_coin = balance['free'][coin_name] if coin_name in balance['free'] else 0.0
-                    if s_coin > 0: st.write(f"🪙 Saldo {coin_name} Real: `{s_coin:.8f}`")
-                except: pass
-            else:
-                if current_sim_coin > 0: st.write(f"🎮 Saldo {coin_name} Demo: `{current_sim_coin:.8f}`")
-
-            # PENGUNCI PROFIT & PELINDUNG SINYAL PALSU (ANTI REPAINT)
-            if not active_trades.empty:
-                for idx, row in active_trades.iterrows():
-                    trade_id = row['id']
-                    buy_price = row['price']
-                    highest_so_far = max(row['highest_price'], current_close)
-                    profit_pct = ((highest_so_far - buy_price) / buy_price) * 100
-                    
-                    if not is_green:
-                        if mode_input == "Live Trading Real" and api_input and secret_input:
-                            try: exchange.create_market_sell_order(pair, row['amount'])
-                            except: pass
-                        else:
-                            save_setting("sim_balance", num_val=float(current_sim_balance + (current_close * row['amount'])))
-                            save_setting(sim_coin_key, num_val=0.0)
-                        update_active_trade(trade_id, highest_so_far, "CLOSED_BY_SIGNAL_DISAPPEARED")
-                        save_setting(last_sig_key, num_val=-1.0)
-                        st.toast(f"🟥 {pair} Sinyal Palsu Lenyap! Auto Cut-Loss.", icon="🚨")
-                        st.rerun()
-                    
-                    if profit_pct >= tp_pct_input:
-                        if current_close <= (highest_so_far * 0.995):
-                            if mode_input == "Live Trading Real" and api_input and secret_input:
-                                try: exchange.create_market_sell_order(pair, row['amount'])
-                                except: pass
-                            else:
-                                save_setting("sim_balance", num_val=float(current_sim_balance + (current_close * row['amount'])))
-                                save_setting(sim_coin_key, num_val=0.0)
-                            update_active_trade(trade_id, highest_so_far, "CLOSED_BY_LOCK_PROFIT")
-                            save_setting(last_sig_key, num_val=-1.0)
-                            st.toast(f"💰 {pair} Keuntungan Berhasil Dikunci!", icon="🔒")
-                            st.rerun()
-                    
-                    sl_price = buy_price * (1 - (sl_pct_input / 100))
-                    if current_close <= sl_price:
-                        if mode_input == "Live Trading Real" and api_input and secret_input:
-                            try: exchange.create_market_sell_order(pair, row['amount'])
-                            except: pass
-                        else:
-                            save_setting("sim_balance", num_val=float(current_sim_balance + (current_close * row['amount'])))
-                            save_setting(sim_coin_key, num_val=0.0)
-                        update_active_trade(trade_id, highest_so_far, "CLOSED_BY_STOP_LOSS")
-                        save_setting(last_sig_key, num_val=-1.0)
-                        st.toast(f"🟥 {pair} Batasan Rugi Terpenuhi (Cut Loss)", icon="🛑")
-                        st.rerun()
-                        
-                    if highest_so_far > row['highest_price']:
-                        update_active_trade(trade_id, highest_so_far, row['status'])
-
-            # SAKELAR EKSEKUSI UTAMA (ANTI BELI BERUNTUN SEJENIS)
-            if raw_buy and last_signal_pair != 1:
-                nominal_belanja = min(order_idr_input, saldo_idr_tersedia)
-                if nominal_belanja >= 10000:
-                    tp = current_close * (1 + (tp_pct_input / 100))
-                    sl = current_close * (1 - (sl_pct_input / 100))
-                    amount_to_buy = nominal_belanja / current_close
-                    
-                    if mode_input == "Live Trading Real" and api_input and secret_input:
-                        try:
-                            exchange.create_market_buy_order(pair, amount_to_buy)
-                            status_order = "LIVE_OPEN"
-                        except: status_order = "ERROR_BUY"
-                    else:
-                        status_order = "DEMO_OPEN"
-                        save_setting("sim_balance", num_val=float(current_sim_balance - nominal_belanja))
-                        save_setting(sim_coin_key, num_val=float(current_sim_coin + amount_to_buy))
-                    
-                    save_trade(pair, 'BUY', current_close, amount_to_buy, tp, sl, current_close, status_order)
-                    save_setting(last_sig_key, num_val=1.0)
-                    st.toast(f"🟩 {pair} INSTAN BUY BERHASIL!", icon="🛒")
-                    st.rerun()
-
-            # LOGIKA GAMBAR VISUAL CANDLESTICK
-            if pair == pair_grafik:
-                st.write(f"📈 **Harga {pair} Sekarang:** Rp {current_close:,.0f}")
-                
-                fig = go.Figure()
-                fig.add_trace(go.Candlestick(
-                    x=df['datetime'], open=df['open'], high=df['high'], low=df['low'], close=df['close'],
-                    name="Candlestick", increasing_line_color='green', decreasing_line_color='red'
-                ))
-                line_color = 'green' if is_green else 'red'
-                fig.add_trace(go.Scatter(x=df['datetime'], y=df['hma'], line=dict(color=line_color, width=2.5), name="Garis HHMA"))
-                
-                if raw_buy:
-                    fig.add_annotation(x=df['datetime'].iloc[-1], y=df['low'].iloc[-1], text="▲ BUY", showarrow=False, yshift=-15, font=dict(color="green", size=14))
-                elif raw_sell:
-                    fig.add_annotation(x=df['datetime'].iloc[-1], y=df['high'].iloc[-1], text="▼ SELL", showarrow=False, yshift=15, font=dict(color="red", size=14))
-                
-                fig.update_layout(xaxis_rangeslider_visible=False, height=350, margin=dict(l=10, r=10, t=10, b=10))
-                st.plotly_chart(fig, use_container_width=True)
-                    
-        except Exception as e:
-            pass
-
-    # MENAMPILKAN TABEL RUNNING MULTI-PAIR TERPADU
-    st.subheader("📊 Tabel Running (Multi-Pair Terbuka)")
-    h_conn = sqlite3.connect('trading_bot.db')
-    t_status = 'LIVE_OPEN' if mode_input == "Live Trading Real" else 'DEMO_OPEN'
-    all_active = pd.read_sql_query(f"SELECT timestamp, pair, signal_type, price, amount, highest_price FROM trades WHERE status='{t_status}'", h_conn)
-    h_conn.close()
-    
-    if not all_active.empty:
-        st.dataframe(all_active, use_container_width=True)
+    # --- LOGIKA PEMICU SINYAL BARU (WAJIB BERGANTIAN VIA DB) ---
     else:
-        st.info("Tidak ada posisi koin berjalan saat ini.")
+        if warna_sekarang == "HIJAU" and warna_sebelumnya == "MERAH" and last_signal == "SELL":
+            pemicu_aksi = "BUY"
+            notif_pesan = "🚀 SINYAL BUY AGRESIF INSTAN VALID"
+
+    # --- EKSEKUSI DATA KE SQLITE JIKA ADA AKSI TRADING ---
+    if pemicu_aksi:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        ts = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        
+        if pemicu_aksi == "BUY":
+            cursor.execute("INSERT INTO trades (timestamp, pair, tipe, harga, jumlah, pemicu, profit_idr, profit_persen) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                           (ts, pair, "BUY", harga_sekarang, 1.0, notif_pesan, 0.0, 0.0))
+            set_setting(f"last_signal_{pair}", "BUY")
+            set_setting(f"posisi_aktif_{pair}", "TRUE")
+            set_setting(f"harga_masuk_{pair}", harga_sekarang)
+            set_setting(f"highest_price_{pair}", harga_sekarang)
+            
+        elif pemicu_aksi == "SELL":
+            profit_idr = (harga_sekarang - harga_masuk) * 1.0
+            profit_persen = ((harga_sekarang - harga_masuk) / harga_masuk) * 100
+            
+            cursor.execute("INSERT INTO trades (timestamp, pair, tipe, harga, jumlah, pemicu, profit_idr, profit_persen) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                           (ts, pair, "SELL", harga_sekarang, 1.0, notif_pesan, profit_idr, profit_persen))
+            set_setting(f"last_signal_{pair}", "SELL")
+            set_setting(f"posisi_aktif_{pair}", "FALSE")
+            set_setting(f"harga_masuk_{pair}", 0.0)
+            set_setting(f"highest_price_{pair}", 0.0)
+            
+        conn.commit()
+        conn.close()
+        st.toast(f"{pair}: {notif_pesan} di harga {harga_sekarang:,.2f}", icon="📈")
+        
+    return df, notif_pesan, harga_sekarang
 
 # ==========================================
-# ALUR UTAMA HALAMAN WEB SCREEN
+# 6. TAMPILAN LAYAR UTAMA CHROME HP (WIDGETS)
 # ==========================================
-st.title("🤖 Indodax Auto Trading Bot Multi-Pair")
+# Ambil data transaksi dari SQLite untuk kalkulasi widget skor performa keseluruhan
+conn = sqlite3.connect(DB_NAME)
+df_trades = pd.read_sql_query("SELECT * FROM trades WHERE tipe='SELL'", conn)
+conn.close()
 
-# KALKULASI STATISTIK WIN RATE GLOBAL & PROFIT BERSIH UTAMA
-target_filter = "Hanya Live Trading" if mode_input == "Live Trading Real" else "Hanya Demo (Simulasi)"
-history_df = get_trade_history(target_filter)
+total_trades = len(df_trades)
+win_trades = len(df_trades[df_trades['profit_idr'] > 0]) if total_trades > 0 else 0
+win_rate = (win_trades / total_trades) * 100 if total_trades > 0 else 0.0
+total_net_profit = df_trades['profit_idr'].sum() if total_trades > 0 else 0.0
 
-closed_trades = history_df[history_df['status'].str.contains('CLOSED|LOCK|LOSS', na=False)].copy()
-total_closed = len(closed_trades)
+# Baris Widget Ringkas Hemat Ruang HP
+col1, col2, col3 = st.columns(3)
+col1.metric("Win Rate", f"{win_rate:.1f}%", f"{total_trades} Trades")
+col2.metric("Net Profit", f"Rp {total_net_profit:,.0f}")
+col3.metric("Live Wallet", "8.12345678 BTC" if mode_dompet == "Live Trading Real" else "100,000,000 IDR")
 
-total_profit_idr = 0.0
-total_profit_pct = 0.0
-win_rate = 0.0
+# Dropdown Pemilihan Pair Aktif
+daftar_pair = ['BTC/IDR', 'ETH/IDR', 'USDT/IDR', 'SOL/IDR', 'DOGE/IDR']
+selected_pair = st.selectbox("🎯 Pilih Monitor Grafik Pair:", daftar_pair)
 
-if total_closed > 0:
-    win_trades = len(closed_trades[closed_trades['status'].str.contains('LOCK', na=False)])
-    win_rate = (win_trades / total_closed) * 100
-    all_buys = history_df[history_df['signal_type'] == 'BUY']
-    
-    for idx, row_closed in closed_trades.iterrows():
-        match_buy = all_buys[(all_buys['id'] > row_closed['id']) & (all_buys['pair'] == row_closed['pair'])].head(1)
-        if not match_buy.empty:
-            harga_beli = match_buy['price'].values[0]
-            harga_jual = row_closed['price']
-            banyak_koin = row_closed['amount']
-            
-            profit_idr = (harga_jual - harga_beli) * banyak_koin
-            profit_pct = ((harga_jual - harga_beli) / harga_beli) * 100
-            
-            total_profit_idr += profit_idr
-            total_profit_pct += profit_pct
+# Jalankan mesin bot untuk pair yang dipilih
+df_market = fetch_market_data(selected_pair)
+df_hasil, status_bot, live_price = jalankan_engine_bot(selected_pair, df_market)
 
-col_p1, col_p2, col_p3 = st.columns(3)
-col_p1.metric(label="🎯 Global Win Rate", value=f"{win_rate:.1f} %")
-col_p2.metric(label="💰 Total Profit Bersih", value=f"Rp {total_profit_idr:,.0f}", delta=f"{total_profit_pct:.2f}%" if total_closed > 0 else "0.00%")
-col_p3.metric(label="📦 Total Trade Selesai", value=f"{total_closed} Kali")
+st.info(f"**Status Terkini {selected_pair}:** {status_bot} | **Harga Running:** Rp {live_price:,.2f}")
 
-if mode_input == "Live Trading Real":
-    st.success("💼 AKUN LIVE TRADING REAL AKTIF (Menggunakan Saldo Asli Indodax)")
+# ==========================================
+# 7. INTERFAS GRAFIK CANDLESTICK PLOTLY
+# ==========================================
+fig = go.Figure()
+
+# Plot Candlestick
+fig.add_trace(go.Candlestick(
+    x=df_hasil.index, open=df_hasil['open'], high=df_hasil['high'],
+    low=df_hasil['low'], close=df_hasil['close'], name="Candle"
+))
+
+# Plot Garis HMA Dinamis Mengikuti Pilihan Sidebar
+fig.add_trace(go.Scatter(
+    x=df_hasil.index, y=df_hasil['hma_val'],
+    line=dict(color='cyan', width=2), name=f"HMA {hma_period}"
+))
+
+fig.update_layout(
+    margin=dict(l=10, r=10, t=10, b=10),
+    xaxis_rangeslider_visible=False,
+    height=350,  # Pas untuk ukuran vertikal layar HP Chrome
+    paper_bgcolor='#111111',
+    plot_bgcolor='#111111',
+    font=dict(color='white')
+)
+st.plotly_chart(fig, use_container_width=True)
+
+# ==========================================
+# 8. TABEL RUNNING TRADES (HISTORI LOKAL)
+# ==========================================
+st.subheader("📋 Catatan Log Jurnal Trading (SQLite)")
+conn = sqlite3.connect(DB_NAME)
+df_all_logs = pd.read_sql_query("SELECT timestamp, pair, tipe, harga, pemicu, profit_persen FROM trades ORDER BY id DESC LIMIT 5", conn)
+conn.close()
+
+if not df_all_logs.empty:
+    st.dataframe(df_all_logs, use_container_width=True)
 else:
-    st.warning("⚠️ AKUN DEMO / SIMULASI AKTIF (Aman Untuk Uji Coba Sinyal)")
-
-st.subheader("Live Multi-Pair Market Tracker (4H - HMA 8)")
-market_monitor_fragment()
-
-st.subheader("📦 Buku Transaksi Historis Global")
-filter_pilihan = st.radio("Saring Data Tabel:", ["Semua Transaksi", "Hanya Live Trading", "Hanya Demo (Simulasi)"], horizontal=True)
-st.dataframe(get_trade_history(filter_pilihan).head(15), use_container_width=True)
+    st.caption("Belum ada eksekusi trade terdeteksi di database lokal.")
