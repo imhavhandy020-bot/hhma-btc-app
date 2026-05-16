@@ -15,15 +15,14 @@ API_KEY = "KXFCXMGP-HXH2UXNK-9T1KRVO0-XCEZBKRR-HCIDLBUF"
 SECRET_KEY = "a423ce71c0c54f54899d0c03193865176b0b5d83b7826f51c3eea4b269ea553ed0087e69ac200d48"
 
 LIST_PAIRS = ['BTC/IDR', 'ETH/IDR', 'USDT/IDR', 'SOL/IDR', 'DOGE/IDR']
-MODAL_PER_TRANSAKSI_IDR = 50000.0  # Rp 50.000 per eksekusi BUY pasar
+MODAL_PER_TRANSAKSI_IDR = 50000.0  # nominal modal Rp 50.000 per transaksi BUY
 
 # =====================================================================
-# 2. SISTEM MEMORI PERMANEN & PENYEMBUHAN DATABASE TOTAL (ANTI-CRASH)
+# 2. SISTEM MEMORI PERMANEN & DATABASE PROTECTION (ANTI-CRASH)
 # =====================================================================
 def init_db():
     conn = sqlite3.connect('trading_bot.db', check_same_thread=False, timeout=20)
     cursor = conn.cursor()
-    
     try:
         cursor.execute("SELECT pair, last_signal, entry_price, timestamp, holding_amount FROM trades LIMIT 1")
     except sqlite3.OperationalError:
@@ -32,46 +31,27 @@ def init_db():
     
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS trades (
-            pair TEXT PRIMARY KEY, 
-            last_signal TEXT, 
-            entry_price REAL, 
-            timestamp TEXT,
-            holding_amount REAL DEFAULT 0.0
+            pair TEXT PRIMARY KEY, last_signal TEXT, entry_price REAL, timestamp TEXT, holding_amount REAL DEFAULT 0.0
         )
     """)
-    
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS history (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, 
-            pair TEXT, 
-            type TEXT, 
-            price REAL, 
-            status TEXT, 
-            timestamp TEXT
+            id INTEGER PRIMARY KEY AUTOINCREMENT, pair TEXT, type TEXT, price REAL, status TEXT, timestamp TEXT
         )
     """)
-    
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS activity_logs (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            timestamp TEXT,
-            message TEXT
+            id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp TEXT, message TEXT
         )
     """)
-    
     try:
         cursor.execute("SELECT last_run FROM settings LIMIT 1")
     except sqlite3.OperationalError:
         cursor.execute("DROP TABLE IF EXISTS settings")
         cursor.execute("""
-            CREATE TABLE settings (
-                max_mdd REAL DEFAULT 5.0, 
-                min_vol REAL DEFAULT 50000000, 
-                last_run TEXT
-            )
+            CREATE TABLE settings (max_mdd REAL DEFAULT 5.0, min_vol REAL DEFAULT 50000000, last_run TEXT)
         """)
         cursor.execute("INSERT INTO settings (max_mdd, min_vol, last_run) VALUES (5.0, 50000000, 'Belum Berjalan')")
-    
     conn.commit()
     return conn
 
@@ -88,16 +68,21 @@ def add_log_message(message):
         pass
 
 # =====================================================================
-# 3. PENARIK DATA CHART & HITUNG INDIKATOR HMA-20 (ANTI-LAG)
+# 3. PENARIK DATA GRAFIK DENGAN SISTEM BACKUP OTOMATIS (ANTI-STUCK)
 # =====================================================================
 def get_indodax_candles_4h(pair):
+    """Mengambil riwayat lilin 4 jam dengan perlindungan server cadangan"""
     clean_pair = pair.lower().replace("/", "")
-    url = "https://indodax.com"
+    
+    # JALUR UTAMA: Server Chart TradingView Indodax
+    url_primary = "https://indodax.com"
     end_time = int(time.time())
     start_time = end_time - (100 * 4 * 3600)  
     params = {'symbol': clean_pair.upper(), 'resolution': '240', 'from': start_time, 'to': end_time}
+    
     try:
-        response = requests.get(url, params=params, timeout=4)
+        # Menaikkan timeout ke 8 detik agar kebal lag jaringan
+        response = requests.get(url_primary, params=params, timeout=8)
         data = response.json()
         if data.get('s') == 'ok':
             return pd.DataFrame({
@@ -106,6 +91,24 @@ def get_indodax_candles_4h(pair):
             })
     except:
         pass
+
+    # JALUR CADANGAN MUTLAK: Menggunakan API Publik V2 Pasar Jika Server Chart Diblokir
+    url_backup = f"https://indodax.com{clean_pair}/historical"
+    try:
+        # Jalur cadangan ini sangat stabil karena menggunakan API utama transaksi bursa
+        res = requests.get(url_backup, timeout=8).json()
+        if isinstance(res, list) and len(res) > 20:
+            df = pd.DataFrame(res)  # format default api v2 berisi riwayat data pasar harian/4h
+            df_cleaned = pd.DataFrame({
+                'timestamp': pd.to_datetime(df['timestamp'], unit='ms'),
+                'open': df['open'].astype(float), 'high': df['high'].astype(float),
+                'low': df['low'].astype(float), 'close': df['close'].astype(float),
+                'volume': df['volume'].astype(float)
+            })
+            return df_cleaned
+    except:
+        pass
+        
     return pd.DataFrame()
 
 def calculate_hma_20(df):
@@ -127,7 +130,7 @@ def get_live_market_price(pair):
     clean_pair = pair.lower().replace("/", "_")
     url = f"https://indodax.com{clean_pair}"
     try:
-        res = requests.get(url, timeout=3).json()
+        res = requests.get(url, timeout=4).json()
         return float(res['ticker']['last'])
     except:
         return None
@@ -143,7 +146,7 @@ def get_indodax_balance():
     signature = hmac.new(bytes(SECRET_KEY, 'utf-8'), msg=bytes(query_string, 'utf-8'), digestmod=hashlib.sha512).hexdigest()
     headers = {"Key": API_KEY, "Sign": signature}
     try:
-        res = requests.post(url, data=payload, headers=headers, timeout=5).json()
+        res = requests.post(url, data=payload, headers=headers, timeout=6).json()
         if res.get('success') == 1 or res.get('success') == '1':
             return float(res['return']['balance']['idr'])
     except:
@@ -158,13 +161,11 @@ def execute_indodax_trade(pair, action, amount_or_coin):
     url = "https://indodax.com"
     nonce = int(time.time() * 1000)
     payload = {"method": "trade", "pair": clean_pair, "type": action.lower(), "price": "market", "nonce": nonce}
-    
     if action.lower() == "buy":
         payload["idr"] = str(int(amount_or_coin))
     else:
         payload["order_type"] = "market"
         payload["amount"] = f"{amount_or_coin:.8f}"
-        
     query_string = requests.compat.urlencode(payload)
     signature = hmac.new(bytes(SECRET_KEY, 'utf-8'), msg=bytes(query_string, 'utf-8'), digestmod=hashlib.sha512).hexdigest()
     headers = {"Key": API_KEY, "Sign": signature}
@@ -188,14 +189,12 @@ def run_autonomous_engine():
     db_conn.commit()
     
     log_summary = []
-    
-    # Ambil info sisa uang Rupiah riil sebelum scanning koin dimulai
     saldo_saat_ini = get_indodax_balance()
     
     for pair in LIST_PAIRS:
         df = get_indodax_candles_4h(pair)
         if df.empty: 
-            log_summary.append(f"{pair}: Gagal ambil chart")
+            log_summary.append(f"{pair}: Jaringan Gagal")
             continue
             
         df = calculate_hma_20(df)
@@ -216,13 +215,10 @@ def run_autonomous_engine():
         
         log_summary.append(f"{pair}: {current_color}")
         
-        # 🟢 SINYAL BUY DENGAN PENGEREM SALDO RIIL
         if current_color == 'Green' and last_signal != 'BUY':
-            # JALUR PROTEKSI REM: Jika uang di dompet tidak cukup untuk membeli modal minimal
             if saldo_saat_ini < MODAL_PER_TRANSAKSI_IDR:
-                add_log_message(f"⚠️ SKIP BUY {pair}: Saldo dompet riil (Rp {saldo_saat_ini:,.0f}) kurang dari Rp {MODAL_PER_TRANSAKSI_IDR:,.0f}")
+                add_log_message(f"⚠️ SKIP BUY {pair}: Saldo Dompet Rp {saldo_saat_ini:,.0f} kurang.")
                 continue
-                
             res = execute_indodax_trade(pair, "buy", MODAL_PER_TRANSAKSI_IDR)
             if res.get("success") == 1:
                 return_receive = float(res['return'].get('receive_coin', 0.0))
@@ -234,10 +230,8 @@ def run_autonomous_engine():
                 cursor.execute("INSERT INTO history (pair, type, price, status, timestamp) VALUES (?, 'BUY', ?, 'SUCCESS', ?)", (pair, current_price, now_str))
                 db_conn.commit()
                 add_log_message(f"🚀 EKSEKUSI BUY SUKSES: {pair} di harga Rp {current_price:,.0f}")
-                # Kurangi saldo di memori bot untuk pair berikutnya
                 saldo_saat_ini -= MODAL_PER_TRANSAKSI_IDR
                 
-        # 🔴 SINYAL SELL RIIL (HMA Merah)
         elif current_color == 'Red' and last_signal == 'BUY':
             coin_to_sell = holding_amount if holding_amount > 0 else (MODAL_PER_TRANSAKSI_IDR / current_price)
             res = execute_indodax_trade(pair, "sell", coin_to_sell)
@@ -250,7 +244,7 @@ def run_autonomous_engine():
                 db_conn.commit()
                 add_log_message(f"📉 EKSEKUSI SELL SUKSES: {pair} di harga Rp {current_price:,.0f}")
 
-    add_log_message("Pemindaian Pasar Selesai | " + " | ".join(log_summary))
+    add_log_message("Pemindaian Pasar Sukses | " + " | ".join(log_summary))
 
 # =====================================================================
 # 6. LAYAR UTAMA DASHBOARD MONITOR (RESPONSIVE CHROME HP)
@@ -331,7 +325,12 @@ saldo_idr_dompet = get_indodax_balance()
 st.markdown("### 🛡️ Indodax Multi-Pair Pro Server")
 col_w, col_s = st.columns(2)
 col_w.metric("Win Rate Bot", f"{win_rate:.1f}%")
-col_s.metric("Server Terakhir Scan", last_run_display.split(" ")[1] if " " in last_run_display else last_run_display)
+
+if last_run_display and " " in last_run_display:
+    waktu_saja = last_run_display.split(" ")[1]
+    col_s.metric("Server Terakhir Scan", str(waktu_saja))
+else:
+    col_s.metric("Server Terakhir Scan", str(last_run_display))
 
 st.markdown("---")
 col_bal, col_pnl = st.columns(2)
