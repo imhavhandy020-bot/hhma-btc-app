@@ -1,12 +1,12 @@
-import streamlit as st
-import pandas as pd
-import numpy as np
+import streamlit st
+import pandas pd
+import numpy np
 import requests
 import sqlite3
 import time
 import hmac
 import hashlib
-from datetime import datetime
+from datetime datetime
 
 # =====================================================================
 # 1. INTEGRASI API KEYS RIIL INDODAX (TERENKRIPSI)
@@ -14,7 +14,6 @@ from datetime import datetime
 API_KEY = "KXFCXMGP-HXH2UXNK-9T1KRVO0-XCEZBKRR-HCIDLBUF"
 SECRET_KEY = "a423ce71c0c54f54899d0c03193865176b0b5d83b7826f51c3eea4b269ea553ed0087e69ac200d48"
 
-# Daftar Koin Sesuai Rangka Pro Anda
 LIST_PAIRS = ['BTC/IDR', 'ETH/IDR', 'USDT/IDR', 'DOGE/IDR', 'SOL/IDR']
 MODAL_PER_TRANSAKSI_IDR = 50000.0  # nominal modal Rp 50.000 per transaksi BUY
 
@@ -22,7 +21,7 @@ MODAL_PER_TRANSAKSI_IDR = 50000.0  # nominal modal Rp 50.000 per transaksi BUY
 # 2. SISTEM MEMORI PERMANEN & DATABASE PROTECTION (ANTI-CRASH)
 # =====================================================================
 def init_db():
-    conn = sqlite3.connect('trading_bot.db', check_same_thread=False, timeout=15)
+    conn = sqlite3.connect('trading_bot.db', check_same_thread=False, timeout=20)
     cursor = conn.cursor()
     try:
         cursor.execute("SELECT pair, last_signal, entry_price, timestamp, holding_amount FROM trades LIMIT 1")
@@ -43,6 +42,12 @@ def init_db():
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS activity_logs (
             id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp TEXT, message TEXT
+        )
+    """)
+    # Tabel baru untuk menyimpan rekam jejak harga live lokal demi kestabilan HMA-20
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS local_candles (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, pair TEXT, close REAL, timestamp TEXT
         )
     """)
     try:
@@ -69,59 +74,42 @@ def add_log_message(message):
         pass
 
 # =====================================================================
-# 3. PENARIK DATA GRAFIK JALUR GLOBAL KUCOIN PAIR IDR (100% AMAN LOLOS FIRAWALL)
+# 3. INTERFACES: AMBIL HARGA LIVE TICKER (BEBAS BLOKIR & TIMEOUT)
 # =====================================================================
-def get_indodax_candles_4h(pair):
-    """Mengambil riwayat lilin 4 jam langsung dari server global Kucoin Market IDR"""
+def get_live_market_price(pair):
+    clean_pair = pair.lower().replace("/", "_")
+    url = f"https://indodax.com{clean_pair}"
     try:
-        kucoin_symbol = pair.upper().replace("/", "-")
-        url = "https://kucoin.com"
-        
-        end_time = int(time.time())
-        start_time = end_time - (100 * 4 * 3600)
-        
-        params = {
-            'symbol': kucoin_symbol,
-            'type': '4hour',         
-            'startAt': start_time,
-            'endAt': end_time
-        }
-        
-        response = requests.get(url, params=params, timeout=8)
-        res_json = response.json()
-        
-        if res_json.get('code') == '200000' and isinstance(res_json.get('data'), list):
-            data = res_json['data']
-            if len(data) > 20:
-                df_raw = pd.DataFrame(data)
-                # FIX KUNCI: Ekstrak nomor urut list array matrix data Kucoin secara aman (0=Time, 1=Open, 2=Close, 3=High, 4=Low)
-                df_cleaned = pd.DataFrame()
-                df_cleaned['timestamp'] = pd.to_datetime(df_raw[0].astype(int), unit='s')
-                df_cleaned['open'] = df_raw[1].astype(float)
-                df_cleaned['close'] = df_raw[2].astype(float)
-                df_cleaned['high'] = df_raw[3].astype(float)
-                df_cleaned['low'] = df_raw[4].astype(float)
-                df_cleaned['volume'] = df_raw[5].astype(float)
-                
-                df_cleaned = df_cleaned.iloc[::-1].reset_index(drop=True)
-                return df_cleaned
-        return pd.DataFrame()
+        res = requests.get(url, timeout=4).json()
+        return float(res['ticker']['last']), float(res['ticker']['vol_idr'])
     except:
-        return pd.DataFrame()
+        return None, 0.0
 
-# =====================================================================
-# TRANSLATE INDIKATOR HMA-20 (TIMEFRAME 4H ACUAN DATA INTERNASIONAL)
-# =====================================================================
+def get_local_candles_dataframe(pair, current_price):
+    """Mencatat dan mengambil data harga berjalan dari SQLite lokal agar kebal lag internasional"""
+    cursor = db_conn.cursor()
+    now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    
+    # Simpan harga detik ini ke dalam memori permanen database
+    cursor.execute("INSERT INTO local_candles (pair, close, timestamp) VALUES (?, ?, ?)", (pair, current_price, now_str))
+    # Batasi memori hanya menyimpan 60 rekaman terakhir agar ringan
+    cursor.execute("DELETE FROM local_candles WHERE id NOT IN (SELECT id FROM local_candles WHERE pair=? ORDER BY id DESC LIMIT 60)", (pair,))
+    db_conn.commit()
+    
+    # Ambil riwayat untuk dihitung rumusnya oleh Pandas
+    df = pd.read_sql_query("SELECT close FROM local_candles WHERE pair=? ORDER BY id ASC", db_conn, params=(pair,))
+    return df
+
 def calculate_hma_20(df):
-    if df.empty or len(df) < 25: return df
+    if df.empty or len(df) < 22: return df
     
     def wma(series, p):
         weights = np.arange(1, p + 1)
         return series.rolling(p).apply(lambda x: np.dot(x, weights) / weights.sum(), raw=True)
     
     period = 20  
-    half_period = int(period / 2)  
-    sqrt_period = int(np.sqrt(period))  
+    half_period = 10  
+    sqrt_period = 4  
     
     wma_half = wma(df['close'], half_period)
     wma_full = wma(df['close'], period)
@@ -133,15 +121,6 @@ def calculate_hma_20(df):
     df['raw_buy'] = df['is_green'] & (~df['is_green'].shift(1).fillna(False))
     df['raw_sell'] = df['is_red'] & (~df['is_red'].shift(1).fillna(False))
     return df
-
-def get_live_market_price(pair):
-    clean_pair = pair.lower().replace("/", "_")
-    url = f"https://indodax.com{clean_pair}"
-    try:
-        res = requests.get(url, timeout=4).json()
-        return float(res['ticker']['last'])
-    except:
-        return None
 
 def get_indodax_balance():
     url = "https://indodax.com"
@@ -172,13 +151,13 @@ def execute_indodax_trade(pair, action, amount_or_coin):
     signature = hmac.new(bytes(SECRET_KEY, 'utf-8'), msg=bytes(query_string, 'utf-8'), digestmod=hashlib.sha512).hexdigest()
     headers = {"Key": API_KEY, "Sign": signature}
     try:
-        response = requests.post(url, data=payload, headers=headers, timeout=6)
+        response = requests.post(url, data=payload, headers=headers, timeout=5)
         return response.json()
     except:
         return {"success": 0, "error": "Timeout"}
 
 # =====================================================================
-# 5. ENGINE UTAMA: PEMINDAIAN MANDIRI JALUR GLOBAL KEBAL BLOKIR
+# 5. ENGINE UTAMA: PEMINDAIAN HIGH-SPEED LOCAL DATABASE
 # =====================================================================
 def run_autonomous_engine():
     cursor = db_conn.cursor()
@@ -193,35 +172,39 @@ def run_autonomous_engine():
     saldo_saat_ini = get_indodax_balance()
     
     for pair in LIST_PAIRS:
-        df = get_indodax_candles_4h(pair)
+        # Ambil harga live ticker kilat domestik Indodax
+        indodax_price, volume_24j_idr = get_live_market_price(pair)
         
-        if df.empty: 
-            add_log_message(f"🔍 {pair} | Status: ❌ Server Kucoin Timeout Jaringan")
+        if indodax_price is None: 
+            add_log_message(f"🔍 {pair} | Status: ❌ Ticker Indodax Delay")
+            continue
+            
+        # Pindahkan pencatatan bar lilin ke database internal SQLite Anda sendiri (Kebal Lag)
+        df = get_local_candles_dataframe(pair, indodax_price)
+        
+        if len(df) < 22:
+            add_log_message(f"🔍 {pair} | Status: ⏳ Mengumpulkan Data Lokal ({len(df)}/22)")
             continue
             
         df = calculate_hma_20(df)
-        if 'hma_value' not in df.columns: 
-            add_log_message(f"🔍 {pair} | Status: ⚠️ Perhitungan Rumus Gagal")
-            continue
-        
         last_bar = df.iloc[-1]
         confirmed_bar = df.iloc[-2]
         current_color = "Hijau (BUY)" if last_bar['is_green'] else "Merah (SELL)"
         
-        indodax_price = get_live_market_price(pair)
-        if indodax_price is None: indodax_price = last_bar['close']
-        
-        current_volume_idr = last_bar['volume'] * indodax_price
-        
+        if volume_24j_idr < min_vol: 
+            add_log_message(f"🔍 {pair} | Sinyal: {current_color} | Status: ⏩ Skip Vol Rendah")
+            continue
+            
         cursor.execute("SELECT last_signal, holding_amount FROM trades WHERE pair = ?", (pair,))
         row = cursor.fetchone()
         last_signal, holding_amount = row if row else ("NONE", 0.0)
         
         add_log_message(f"🔍 {pair} | Sinyal Tren: {current_color} | Posisi SQLite: {last_signal}")
         
+        # BUY
         if confirmed_bar['raw_buy'] and last_signal != 'BUY':
             if saldo_saat_ini < MODAL_PER_TRANSAKSI_IDR:
-                add_log_message(f"⚠️ {pair} | Sinyal: BUY | Status: 🛑 Saldo Dompet Rp {saldo_saat_ini:,.0f} Kurang")
+                add_log_message(f"⚠️ {pair} | Sinyal: BUY | Status: 🛑 Saldo Kurang")
                 continue
             res = execute_indodax_trade(pair, "buy", MODAL_PER_TRANSAKSI_IDR)
             if res.get("success") == 1:
@@ -233,6 +216,7 @@ def run_autonomous_engine():
                 add_log_message(f"🚀 {pair} | Aksi: BERHASIL BUY ORDER")
                 saldo_saat_ini -= MODAL_PER_TRANSAKSI_IDR
                 
+        # SELL
         elif confirmed_bar['raw_sell'] and last_signal == 'BUY':
             coin_to_sell = holding_amount if holding_amount > 0 else (MODAL_PER_TRANSAKSI_IDR / indodax_price)
             res = execute_indodax_trade(pair, "sell", coin_to_sell)
@@ -243,24 +227,22 @@ def run_autonomous_engine():
                 add_log_message(f"📉 {pair} | Aksi: BERHASIL SELL ORDER")
 
 # =====================================================================
-# 6. LAYAR UTAMA DASHBOARD MONITOR (RESPONSIVE CHROME HP)
+# 6. LAYAR monitor CHROME HP
 # =====================================================================
 cursor = db_conn.cursor()
 cursor.execute("SELECT COUNT(*) FROM history WHERE type='SELL' AND status='SUCCESS'")
 total_win_row = cursor.fetchone()
-# PERBAIKAN MUTLAK TUPLE: Mengekstrak elemen indeks [0] sebelum diubah menjadi int
 total_win = int(total_win_row[0]) if total_win_row else 0
 
 cursor.execute("SELECT COUNT(*) FROM history WHERE status='SUCCESS'")
 total_trades_row = cursor.fetchone()
-# PERBAIKAN MUTLAK TUPLE: Mengekstrak elemen indeks [0] sebelum diubah menjadi int
 total_trades = int(total_trades_row[0]) if total_trades_row else 0
 
 win_rate = (total_win / (total_trades / 2)) * 100 if total_trades > 1 and total_win > 0 else 100.0
 
 cursor.execute("SELECT last_run FROM settings LIMIT 1")
 last_run_time = cursor.fetchone()
-last_run_display = last_run_time[0] if last_run_time and last_run_time else "Belum Berjalan"
+last_run_display = last_run_time[0] if last_run_time and last_run_time[0] else "Belum Berjalan"
 
 total_modal_aktif = 0.0
 total_valuasi_aktif = 0.0
@@ -270,11 +252,11 @@ try:
     for pair in LIST_PAIRS:
         cursor.execute("SELECT last_signal, entry_price, holding_amount FROM trades WHERE pair = ?", (pair,))
         row = cursor.fetchone()
-        live_price = get_live_market_price(pair)
+        live_price, _ = get_live_market_price(pair)
         
         if row and str(row[0]) == 'BUY':
-            entry_price = float(row[1])
-            holding_amount = float(row[2])
+            entry_price = float(row[2])
+            holding_amount = float(row[4])
             posisi = "🛒 BUYING"
             if live_price is None: live_price = entry_price
             current_value_idr = holding_amount * live_price
@@ -339,7 +321,7 @@ except:
 st.sidebar.header("⚙️ Manajemen Risiko")
 cursor.execute("SELECT max_mdd, min_vol FROM settings LIMIT 1")
 curr_set = cursor.fetchone()
-curr_mdd, curr_vol = curr_set[:2] if curr_set else (5.0, 50000000)
+curr_mdd, curr_vol = curr_set[0], curr_set[1] if curr_set else (5.0, 50000000)
 
 input_mdd = st.sidebar.number_input("Max Drawdown Harian (%)", value=curr_mdd, step=0.5)
 input_vol = st.sidebar.number_input("Min Volume 24J (IDR)", value=int(curr_vol), step=5000000)
@@ -349,9 +331,7 @@ if st.sidebar.button("💾 Terapkan Batas Risiko"):
     db_conn.commit()
     st.sidebar.success("Parameter risiko tersimpan ke Cloud!")
 
-# =====================================================================
-# INTERVAL RE-SCAN TINGGI CLOUD (60 DETIK / 1 MENIT)
-# =====================================================================
+# Putar pemindaian super cepat & kilat di database internal Anda (60 Detik)
 run_autonomous_engine()
 time.sleep(60)
 st.rerun()
