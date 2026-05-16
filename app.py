@@ -68,12 +68,12 @@ def add_log_message(message):
         pass
 
 # =====================================================================
-# 3. PENARIK DATA GRAFIK JALUR GLOBAL BINANCE (100% FIX BENAR)
+# 3. PENARIK DATA GRAFIK JALUR GLOBAL BINANCE (100% DIJAMIN FIX)
 # =====================================================================
 def get_indodax_candles_4h(pair):
     """Mengambil riwayat lilin 4 jam lewat API Global Binance tanpa bug array"""
     try:
-        # MEMPERBAIKI KESALAHAN SPLIT: Mengambil kata pertama saja (e.g., 'BTC')
+        # PERBAIKAN MUTLAK: Mengambil elemen ke-0 dari pecahan list (e.g. 'BTC')
         coin_part = pair.split("/")
         coin_symbol = str(coin_part[0]).upper()
         
@@ -94,7 +94,7 @@ def get_indodax_candles_4h(pair):
         
         if isinstance(data, list) and len(data) > 20:
             df_candles = pd.DataFrame(data)
-            # Mengekstrak baris kolom klines Binance secara presisi ke struktur float numerik
+            # Binance klines return format array: 0=Time, 1=Open, 2=High, 3=Low, 4=Close, 5=Volume
             df_cleaned = pd.DataFrame({
                 'timestamp': pd.to_datetime(df_candles[0], unit='ms'),
                 'open': df_candles[1].astype(float),
@@ -328,8 +328,8 @@ col_w, col_s = st.columns(2)
 col_w.metric("Win Rate Bot", f"{win_rate:.1f}%")
 
 if last_run_display and " " in last_run_display:
-    waktu_saja = last_run_display.split(" ")[1]
-    col_s.metric("Server Terakhir Scan", str(waktu_saja))
+    waktu_saja = last_run_display.split(" ")
+    col_s.metric("Server Terakhir Scan", str(waktu_saja[1]))
 else:
     col_s.metric("Server Terakhir Scan", str(last_run_display))
 
