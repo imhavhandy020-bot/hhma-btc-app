@@ -71,10 +71,7 @@ def add_log_message(message):
 # 3. PENARIK DATA GRAFIK DENGAN PEMBERSIH KOLOM GANDA (ANTI-FAIL)
 # =====================================================================
 def get_indodax_candles_4h(pair):
-    """Mengambil riwayat lilin 4 jam dengan toleransi format nama kolom ganda"""
     clean_pair = pair.lower().replace("/", "")
-    
-    # JALUR UTAMA: Server Chart TradingView Indodax
     url_primary = "https://indodax.com"
     end_time = int(time.time())
     start_time = end_time - (100 * 4 * 3600)  
@@ -91,13 +88,11 @@ def get_indodax_candles_4h(pair):
     except:
         pass
 
-    # JALUR CADANGAN MUTLAK: Dilengkapi penormalan huruf besar/kecil pada kolom Pandas
     url_backup = f"https://indodax.com{clean_pair}/historical"
     try:
         res = requests.get(url_backup, timeout=8).json()
         if isinstance(res, list) and len(res) > 5:
             df = pd.DataFrame(res)
-            # Paksa semua nama kolom data cadangan menjadi huruf kecil agar seragam
             df.columns = [str(col).lower() for col in df.columns]
             
             df_cleaned = pd.DataFrame({
@@ -253,11 +248,11 @@ def run_autonomous_engine():
 cursor = db_conn.cursor()
 cursor.execute("SELECT COUNT(*) FROM history WHERE type='SELL' AND status='SUCCESS'")
 total_win_row = cursor.fetchone()
-total_win = int(total_win_row) if total_win_row else 0
+total_win = int(total_win_row[0]) if total_win_row else 0
 
 cursor.execute("SELECT COUNT(*) FROM history WHERE status='SUCCESS'")
 total_trades_row = cursor.fetchone()
-total_trades = int(total_trades_row) if total_trades_row else 0
+total_trades = int(total_trades_row[0]) if total_trades_row else 0
 
 if total_trades > 1 and total_win > 0:
     win_rate = (total_win / (total_trades / 2)) * 100
@@ -266,7 +261,7 @@ else:
 
 cursor.execute("SELECT last_run FROM settings LIMIT 1")
 last_run_time = cursor.fetchone()
-last_run_display = last_run_time if last_run_time and last_run_time else "Belum Berjalan"
+last_run_display = last_run_time[0] if last_run_time and last_run_time[0] else "Belum Berjalan"
 
 total_modal_aktif = 0.0
 total_valuasi_aktif = 0.0
@@ -278,9 +273,9 @@ try:
         row = cursor.fetchone()
         live_price = get_live_market_price(pair)
         
-        if row and str(row) == 'BUY':
-            entry_price = float(row)
-            holding_amount = float(row)
+        if row and str(row[0]) == 'BUY':
+            entry_price = float(row[1])
+            holding_amount = float(row[2])
             posisi = "🛒 BUYING"
             
             if live_price is None: live_price = entry_price
@@ -328,7 +323,7 @@ col_w, col_s = st.columns(2)
 col_w.metric("Win Rate Bot", f"{win_rate:.1f}%")
 
 if last_run_display and " " in last_run_display:
-    waktu_saja = last_run_display.split(" ")
+    waktu_saja = last_run_display.split(" ")[1]
     col_s.metric("Server Terakhir Scan", str(waktu_saja))
 else:
     col_s.metric("Server Terakhir Scan", str(last_run_display))
