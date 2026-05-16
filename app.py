@@ -68,33 +68,33 @@ def add_log_message(message):
         pass
 
 # =====================================================================
-# 3. PENARIK DATA GRAFIK JALUR GLOBAL BINANCE (BEBAS BLOKIR IP)
+# 3. PENARIK DATA GRAFIK JALUR GLOBAL BINANCE (DIPERBAIKI MUTLAK)
 # =====================================================================
 def get_indodax_candles_4h(pair):
     """Mengambil riwayat lilin 4 jam lewat API Global Binance agar bebas blokir IP Streamlit"""
-    # Ubah format pair Indodax ke simbol Binance (e.g., BTC/IDR -> BTCUSDT)
-    # Kebanyakan koin dianalisis stabil lewat acuan pasar USDT global
-    coin_symbol = pair.split("/")[0].upper()
-    if coin_symbol == "USDT":
-        # Khusus USDT/IDR, kita ambil acuan grafik USDC/USDT di Binance
-        binance_symbol = "USDCUSDT"
-    else:
-        binance_symbol = f"{coin_symbol}USDT"
-        
-    url = "https://binance.com"
-    params = {
-        'symbol': binance_symbol,
-        'interval': '4h', # Timeframe 4 Jam sesuai spesifikasi Pro Anda
-        'limit': 100      # Mengambil 100 bar terakhir untuk kestabilan kalkulasi HMA-20
-    }
-    
     try:
+        # PERBAIKAN SINTAKS: Memisahkan string text sebelum menggunakan .upper()
+        coin_part = pair.split("/")[0]
+        coin_symbol = str(coin_part).upper()
+        
+        if coin_symbol == "USDT":
+            binance_symbol = "USDCUSDT"
+        else:
+            binance_symbol = f"{coin_symbol}USDT"
+            
+        url = "https://binance.com"
+        params = {
+            'symbol': binance_symbol,
+            'interval': '4h',
+            'limit': 100      
+        }
+        
         response = requests.get(url, params=params, timeout=10)
         data = response.json()
         
         if isinstance(data, list) and len(data) > 20:
-            # Mengubah format array mentah Binance menjadi Dataframe Pandas
             df_candles = pd.DataFrame(data)
+            # Ambil kolom spesifik penanda OHLCV dari susunan data Binance klines
             df_cleaned = pd.DataFrame({
                 'timestamp': pd.to_datetime(df_candles[0], unit='ms'),
                 'open': df_candles[1].astype(float),
@@ -104,10 +104,12 @@ def get_indodax_candles_4h(pair):
                 'volume': df_candles[5].astype(float)
             })
             return df_cleaned
-    except:
-        pass
-        
-    return pd.DataFrame()
+        else:
+            return pd.DataFrame()
+    except Exception as err:
+        # Jika terjadi kendala internal penguraian data, catat jenis errornya ke dashboard
+        add_log_message(f"⚠️ Eror Penguraian Grafik {pair}: {str(err)}")
+        return pd.DataFrame()
 
 def calculate_hma_20(df):
     if df.empty or len(df) < 20: return df
@@ -190,10 +192,9 @@ def run_autonomous_engine():
     saldo_saat_ini = get_indodax_balance()
     
     for pair in LIST_PAIRS:
-        # Menarik data market via infrastruktur raksasa Binance Global
         df = get_indodax_candles_4h(pair)
         if df.empty: 
-            log_summary.append(f"{pair}: Jaringan Gagal")
+            log_summary.append(f"{pair}: Koneksi Gagal")
             continue
             
         df = calculate_hma_20(df)
@@ -202,13 +203,11 @@ def run_autonomous_engine():
         last_bar = df.iloc[-1]
         current_color = last_bar['hma_color']
         
-        # Ambil harga asli riil dari Indodax khusus untuk eksekusi trade & filter volume rupiah
         indodax_price = get_live_market_price(pair)
         if indodax_price is None: indodax_price = last_bar['close']
         
         current_volume_idr = last_bar['volume'] * indodax_price
         
-        # Kita lewati saringan volume jika perputaran uang global melimpah
         if current_volume_idr < min_vol: 
             log_summary.append(f"{pair}: Skip (Volume Rendah)")
             continue
@@ -248,7 +247,7 @@ def run_autonomous_engine():
                 db_conn.commit()
                 add_log_message(f"📉 EKSEKUSI SELL SUKSES: {pair} di harga Rp {indodax_price:,.0f}")
 
-    add_log_message("Pemindaian Pasar Sukses | " + " | ".join(log_summary))
+    add_log_message("Pemindaian Selesai | " + " | ".join(log_summary))
 
 # =====================================================================
 # 6. LAYAR UTAMA DASHBOARD MONITOR (RESPONSIVE CHROME HP)
