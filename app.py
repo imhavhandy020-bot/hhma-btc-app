@@ -13,7 +13,7 @@ from urllib.parse import urlencode
 # ==========================================
 # 1. KONFIGURASI UTAMA LAYAR HP CHROME
 # ==========================================
-st.set_page_config(layout="centered", page_title="Indodax Pro Bot", page_icon="🤖")
+st.set_page_config(layout="centered", page_title="Indodax Real Bot Pro", page_icon="💰")
 
 DB_NAME = 'trading_bot.db'
 
@@ -56,21 +56,19 @@ def set_setting(key, val):
 init_db()
 
 # ==========================================
-# 2. SISTEM OTOMATIS MEMBACA KUNCI SECRETS (ANTI-REFRESH HILANG)
+# 2. SISTEM OTOMATIS MEMBACA KUNCI SECRETS REAL
 # ==========================================
 try:
     api_key_input = st.secrets["INDODAX_API_KEY"]
     secret_key_input = st.secrets["INDODAX_SECRET_KEY"]
     default_modal = int(st.secrets["DEFAULT_MODAL_BELANJA"])
     default_sl = float(st.secrets["DEFAULT_STOP_LOSS"])
-    default_mode = st.secrets["DEFAULT_MODE_AKUN"]
     bot_is_authenticated = True
 except Exception:
     api_key_input = ""
     secret_key_input = ""
     default_modal = 100000
     default_sl = 2.0
-    default_mode = "Demo/Simulasi"
     bot_is_authenticated = False
 
 # ==========================================
@@ -97,22 +95,15 @@ def fetch_live_indodax_data(pair):
         return pd.DataFrame()
 
 # ==========================================
-# 4. ENGINE EKSEKUSI API PRIVATE INDODAX (LIVE)
+# 4. ENGINE EKSEKUSI API PRIVATE INDODAX (LIVE REAL)
 # ==========================================
 def ambil_saldo_indodax(api_key, secret_key, pair):
-    """
-    Memanggil metode 'getInfo' untuk sinkronisasi saldo dompet riil.
-    FIXED: Memperbaiki AttributeError pemotongan teks string murni.
-    """
     url_tapi = "https://indodax.com"
-    
-    # Nonce aman dengan lompatan milidetik
     nonce = int(time.time() * 1000) + 2000
     payload = {'method': 'getInfo', 'nonce': nonce}
     
-    # Mengambil indeks string pertama [0] baru diubah ke huruf kecil murni
     parts = pair.split('/')
-    coin_code = parts[0].lower() if len(parts) > 0 else "btc"
+    coin_code = parts.lower() if len(parts) > 0 else "btc"
     
     try:
         query_string = urlencode(payload)
@@ -148,22 +139,22 @@ def kirim_order_indodax(api_key, secret_key, pair, tipe_aksi, nominal_idr=None, 
         return {"success": 0, "error": str(e)}
 
 # ==========================================
-# 5. SIDEBAR UTAMA & PARAMETER AMAN REFRESH
+# 5. SIDEBAR UTAMA & PARAMETER REAL
 # ==========================================
-st.sidebar.header("⚙️ STATUS KUNCI SECRETS")
+st.sidebar.header("⚙️ STATUS KUNCI BURSA")
 
 if bot_is_authenticated:
-    st.sidebar.success("🟢 MESIN AKTIF (Kunci Terkunci di Server)")
+    st.sidebar.success("🟢 REAL ACCOUNT ACTIVE")
 else:
-    st.sidebar.error("🔴 MESIN MATI (Isi Menu Secrets Dahulu)")
+    st.sidebar.error("🔴 API KEY TERPUTUS (Cek Secrets)")
 
 st.sidebar.markdown("---")
-st.sidebar.header("📊 PARAMETER TRADING")
+st.sidebar.header("📊 SETTING TRANSAKSI")
 
 order_size_idr = st.sidebar.number_input("💰 Modal Beli per Trade (IDR)", min_value=10000, value=default_modal, step=10000)
 sl_input = st.sidebar.number_input("Stop Loss Fisik (%)", min_value=0.5, max_value=10.0, value=default_sl, step=0.1)
-mode_dompet = st.sidebar.radio("Mode Perhitungan", ["Demo/Simulasi", "Live Trading Real"], index=0 if default_mode == "Demo/Simulasi" else 1)
 
+# Parameter HMA-20 terkunci mati untuk Akun Real Anda
 hma_period = 20
 
 # ==========================================
@@ -185,7 +176,7 @@ def hitung_hma_dinamis(df, period):
     return df
 
 # ==========================================
-# 7. CORE LOGIKA TRADING AGRESIF INSTAN & TTP
+# 7. CORE LOGIKA TRADING REAL AGRESIF INSTAN
 # ==========================================
 def jalankan_engine_bot(pair, df):
     if df.empty:
@@ -204,7 +195,7 @@ def jalankan_engine_bot(pair, df):
     highest_price = float(get_setting(f"highest_price_{pair}", default=0.0))
     
     pemicu_aksi = None
-    notif_pesan = "Menunggu Transisi Warna..."
+    notif_pesan = "Menganalisis Pergerakan..."
     
     if bot_is_authenticated:
         if posisi_aktif == "TRUE":
@@ -231,15 +222,16 @@ def jalankan_engine_bot(pair, df):
 
         if pemicu_aksi:
             api_success = True
-            if mode_dompet == "Live Trading Real":
-                if pemicu_aksi == "BUY":
-                    res_api = kirim_order_indodax(api_key_input, secret_key_input, pair, "BUY", nominal_idr=order_size_idr)
-                else:
-                    res_api = kirim_order_indodax(api_key_input, secret_key_input, pair, "SELL", jumlah_coin=0.0)
-                
-                if res_api.get('success') != 1:
-                    api_success = False
-                    notif_pesan += f" | ❌ API Error: {res_api.get('error')}"
+            
+            # EKSEKUSI TRANSAKSI UANG NYATA SECARA LANGSUNG
+            if pemicu_aksi == "BUY":
+                res_api = kirim_order_indodax(api_key_input, secret_key_input, pair, "BUY", nominal_idr=order_size_idr)
+            else:
+                res_api = kirim_order_indodax(api_key_input, secret_key_input, pair, "SELL", jumlah_coin=0.0)
+            
+            if res_api.get('success') != 1:
+                api_success = False
+                notif_pesan += f" | ❌ API Error: {res_api.get('error')}"
             
             if api_success:
                 conn = sqlite3.connect(DB_NAME)
@@ -266,7 +258,7 @@ def jalankan_engine_bot(pair, df):
     return df, notif_pesan, harga_sekarang
 
 # ==========================================
-# 8. TAMPILAN WIDGETS CHROME HP
+# 8. TAMPILAN DOMPET & MONITORING NYATA HP
 # ==========================================
 conn = sqlite3.connect(DB_NAME)
 try:
@@ -282,11 +274,12 @@ total_net_profit = df_trades['profit_idr'].sum() if total_trades > 0 else 0.0
 daftar_pair = ['BTC/IDR', 'ETH/IDR', 'USDT/IDR', 'SOL/IDR', 'DOGE/IDR']
 selected_pair = st.selectbox("🎯 Pilih Monitor Grafik Pair:", daftar_pair)
 
-saldo_idr_tampil = 100000000.0
-saldo_coin_tampil = 8.12345678
-coin_label = selected_pair.split('/')[0]
+# Set nilai dasar 0 jika koneksi terputus
+saldo_idr_tampil = 0.0
+saldo_coin_tampil = 0.0
+coin_label = selected_pair.split('/')
 
-if mode_dompet == "Live Trading Real" and bot_is_authenticated:
+if bot_is_authenticated:
     data_dompet = ambil_saldo_indodax(api_key_input, secret_key_input, pair=selected_pair)
     if data_dompet.get("success"):
         saldo_idr_tampil = data_dompet["idr"]
@@ -295,16 +288,16 @@ if mode_dompet == "Live Trading Real" and bot_is_authenticated:
 
 col1, col2, col3 = st.columns(3)
 col1.metric("Win Rate", f"{win_rate:.1f}%", f"{total_trades} Trades")
-col2.metric("Wallet IDR", f"Rp {saldo_idr_tampil:,.0f}")
-col3.metric(f"Wallet {coin_label}", f"{saldo_coin_tampil:.8f}")
+col2.metric("Wallet IDR Asli", f"Rp {saldo_idr_tampil:,.0f}")
+col3.metric(f"Wallet Real {coin_label}", f"{saldo_coin_tampil:.8f}")
 
 df_market = fetch_live_indodax_data(selected_pair)
 df_hasil, status_bot, live_price = jalankan_engine_bot(selected_pair, df_market)
 
 if bot_is_authenticated:
-    st.success(f"🤖 **Status Sinyal:** {status_bot} | **Harga Riil:** Rp {live_price:,.2f}")
+    st.success(f"📈 **Harga Live {selected_pair}:** Rp {live_price:,.2f} | {status_bot}")
 else:
-    st.error(f"🛑 **Status Keamanan:** Aktifkan Kunci di Menu Secrets Dasbor Streamlit.")
+    st.error("🛑 MASALAH KEAMANAN: Masukkan API Key dan Secret Key asli Anda di menu Secrets Streamlit Cloud.")
 
 # ==========================================
 # 9. GRAFIK PLOTLY REAL-TIME & TABEL JURNAL
@@ -316,7 +309,7 @@ if not df_hasil.empty and 'hma_val' in df_hasil.columns:
     fig.update_layout(margin=dict(l=10, r=10, t=10, b=10), xaxis_rangeslider_visible=False, height=350, paper_bgcolor='#111111', plot_bgcolor='#111111', font=dict(color='white'))
     st.plotly_chart(fig, use_container_width=True)
 
-st.subheader("📋 Catatan Log Jurnal Trading (SQLite)")
+st.subheader("📋 Catatan Log Jurnal Trading Nyata (SQLite)")
 conn = sqlite3.connect(DB_NAME)
 try:
     df_all_logs = pd.read_sql_query("SELECT timestamp, pair, tipe, harga, pemicu, profit_persen FROM trades ORDER BY id DESC LIMIT 5", conn)
@@ -327,4 +320,4 @@ conn.close()
 if not df_all_logs.empty:
     st.dataframe(df_all_logs, use_container_width=True)
 else:
-    st.caption("Belum ada eksekusi trade terdeteksi di database lokal.")
+    st.caption("Belum ada riwayat transaksi akun real terdeteksi di database lokal.")
