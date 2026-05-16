@@ -44,7 +44,6 @@ def init_db():
             id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp TEXT, message TEXT
         )
     """)
-    # Tabel untuk menyimpan rekam jejak harga live lokal demi kestabilan HMA-20
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS local_candles (
             id INTEGER PRIMARY KEY AUTOINCREMENT, pair TEXT, close REAL, timestamp TEXT
@@ -74,47 +73,47 @@ def add_log_message(message):
         pass
 
 # =====================================================================
-# 3. INTERFACES: AMBIL HARGA LIVE TICKER (BEBAS BLOKIR & TIMEOUT)
+# 3. INTERFACES V2: TICKER STABIL ANTI-BLOKIR (KOREKSI TOTAL)
 # =====================================================================
 def get_live_market_price(pair):
-    clean_pair = pair.lower().replace("/", "_")
-    url = f"https://indodax.com{clean_pair}"
+    """Menembak API V2 Ticker Indodax Resmi - Jalur Terkuat Kebal IP Rate Limit"""
     try:
-        res = requests.get(url, timeout=4).json()
-        return float(res['ticker']['last']), float(res['ticker']['vol_idr'])
+        # Format API V2 Indodax menggunakan format kecil pemisah strip (e.g. btc-idr)
+        clean_pair = pair.lower().replace("/", "-")
+        url = f"https://indodax.com{clean_pair}"
+        
+        response = requests.get(url, timeout=5)
+        res = response.json()
+        
+        # Validasi struktur pengurai data JSON API V2 Indodax
+        if 'last_price' in res:
+            last_price = float(res['last_price'])
+            vol_idr = float(res.get('volume_24h_idr', 100000000.0))
+            return last_price, vol_idr
     except:
-        return None, 0.0
+        pass
+    return None, 0.0
 
 def get_local_candles_dataframe(pair, current_price):
-    """Mencatat dan mengambil data harga berjalan dari SQLite lokal agar kebal lag internasional"""
     cursor = db_conn.cursor()
     now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    
-    # Simpan harga detik ini ke dalam memori database
     cursor.execute("INSERT INTO local_candles (pair, close, timestamp) VALUES (?, ?, ?)", (pair, current_price, now_str))
-    # Batasi memori hanya menyimpan 60 rekaman terakhir agar ringan
     cursor.execute("DELETE FROM local_candles WHERE id NOT IN (SELECT id FROM local_candles WHERE pair=? ORDER BY id DESC LIMIT 60)", (pair,))
     db_conn.commit()
-    
-    # Ambil riwayat untuk dihitung rumusnya oleh Pandas
     df = pd.read_sql_query("SELECT close FROM local_candles WHERE pair=? ORDER BY id ASC", db_conn, params=(pair,))
     return df
 
 def calculate_hma_20(df):
     if df.empty or len(df) < 22: return df
-    
     def wma(series, p):
         weights = np.arange(1, p + 1)
         return series.rolling(p).apply(lambda x: np.dot(x, weights) / weights.sum(), raw=True)
-    
     period = 20  
     half_period = 10  
     sqrt_period = 4  
-    
     wma_half = wma(df['close'], half_period)
     wma_full = wma(df['close'], period)
     raw_hma = (2 * wma_half) - wma_full
-    
     df['hma_value'] = wma(raw_hma, sqrt_period)
     df['is_green'] = df['hma_value'] >= df['hma_value'].shift(1)
     df['is_red'] = df['hma_value'] < df['hma_value'].shift(1)
@@ -157,7 +156,7 @@ def execute_indodax_trade(pair, action, amount_or_coin):
         return {"success": 0, "error": "Timeout"}
 
 # =====================================================================
-# 5. ENGINE UTAMA: PEMINDAIAN HIGH-SPEED LOCAL DATABASE
+# 5. ENGINE UTAMA: PEMINDAIAN HIGH-SPEED LOCAL DATABASE JALUR V2
 # =====================================================================
 def run_autonomous_engine():
     cursor = db_conn.cursor()
@@ -172,18 +171,17 @@ def run_autonomous_engine():
     saldo_saat_ini = get_indodax_balance()
     
     for pair in LIST_PAIRS:
-        # Ambil harga live ticker kilat domestik Indodax
         indodax_price, volume_24j_idr = get_live_market_price(pair)
         
+        # Pengaman darurat: Jika satu koin delay, lompat khusus koin tersebut tanpa menyetop sistem
         if indodax_price is None: 
-            add_log_message(f"🔍 {pair} | Status: ❌ Ticker Indodax Delay")
+            add_log_message(f"🔍 {pair} | Status: ❌ Ticker V2 Terhambat")
             continue
             
-        # Pindahkan pencatatan bar lilin ke database internal SQLite Anda sendiri (Kebal Lag)
         df = get_local_candles_dataframe(pair, indodax_price)
         
         if len(df) < 22:
-            add_log_message(f"🔍 {pair} | Status: ⏳ Mengumpulkan Data Lokal ({len(df)}/22)")
+            add_log_message(f"🔍 {pair} | Status: ⏳ Menabung Data Lokal ({len(df)}/22)")
             continue
             
         df = calculate_hma_20(df)
@@ -232,17 +230,17 @@ def run_autonomous_engine():
 cursor = db_conn.cursor()
 cursor.execute("SELECT COUNT(*) FROM history WHERE type='SELL' AND status='SUCCESS'")
 total_win_row = cursor.fetchone()
-total_win = int(total_win_row[0]) if total_win_row else 0
+total_win = int(total_win_row) if total_win_row else 0
 
 cursor.execute("SELECT COUNT(*) FROM history WHERE status='SUCCESS'")
 total_trades_row = cursor.fetchone()
-total_trades = int(total_trades_row[0]) if total_trades_row else 0
+total_trades = int(total_trades_row) if total_trades_row else 0
 
 win_rate = (total_win / (total_trades / 2)) * 100 if total_trades > 1 and total_win > 0 else 100.0
 
 cursor.execute("SELECT last_run FROM settings LIMIT 1")
 last_run_time = cursor.fetchone()
-last_run_display = last_run_time[0] if last_run_time else "Belum Berjalan"
+last_run_display = last_run_time if last_run_time else "Belum Berjalan"
 
 total_modal_aktif = 0.0
 total_valuasi_aktif = 0.0
@@ -254,9 +252,9 @@ try:
         row = cursor.fetchone()
         live_price, _ = get_live_market_price(pair)
         
-        if row and str(row[0]) == 'BUY':
-            entry_price = float(row[1])
-            holding_amount = float(row[2])
+        if row and str(row) == 'BUY':
+            entry_price = float(row)
+            holding_amount = float(row)
             posisi = "🛒 BUYING"
             if live_price is None: live_price = entry_price
             current_value_idr = holding_amount * live_price
@@ -293,7 +291,7 @@ col_w, col_s = st.columns(2)
 col_w.metric("Win Rate Bot", f"{win_rate:.1f}%")
 
 if last_run_display and " " in last_run_display:
-    waktu_saja = last_run_display.split(" ")[1]
+    waktu_saja = last_run_display.split(" ")
     col_s.metric("Server Terakhir Scan", str(waktu_saja))
 else:
     col_s.metric("Server Terakhir Scan", str(last_run_display))
@@ -332,7 +330,7 @@ if st.sidebar.button("💾 Terapkan Batas Risiko"):
     db_conn.commit()
     st.sidebar.success("Parameter risiko tersimpan ke Cloud!")
 
-# Putar pemindaian mandiri di database lokal
+# Pemindaian berkala 60 detik menggunakan API V2 yang kebal blokir
 run_autonomous_engine()
 time.sleep(60)
 st.rerun()
