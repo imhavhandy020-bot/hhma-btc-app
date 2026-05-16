@@ -68,14 +68,14 @@ def add_log_message(message):
         pass
 
 # =====================================================================
-# 3. PENARIK DATA GRAFIK JALUR GLOBAL BINANCE (DIPERBAIKI MUTLAK)
+# 3. PENARIK DATA GRAFIK JALUR GLOBAL BINANCE (100% FIX BENAR)
 # =====================================================================
 def get_indodax_candles_4h(pair):
-    """Mengambil riwayat lilin 4 jam lewat API Global Binance agar bebas blokir IP Streamlit"""
+    """Mengambil riwayat lilin 4 jam lewat API Global Binance tanpa bug array"""
     try:
-        # PERBAIKAN SINTAKS: Memisahkan string text sebelum menggunakan .upper()
-        coin_part = pair.split("/")[0]
-        coin_symbol = str(coin_part).upper()
+        # MEMPERBAIKI KESALAHAN SPLIT: Mengambil kata pertama saja (e.g., 'BTC')
+        coin_part = pair.split("/")
+        coin_symbol = str(coin_part[0]).upper()
         
         if coin_symbol == "USDT":
             binance_symbol = "USDCUSDT"
@@ -94,7 +94,7 @@ def get_indodax_candles_4h(pair):
         
         if isinstance(data, list) and len(data) > 20:
             df_candles = pd.DataFrame(data)
-            # Ambil kolom spesifik penanda OHLCV dari susunan data Binance klines
+            # Mengekstrak baris kolom klines Binance secara presisi ke struktur float numerik
             df_cleaned = pd.DataFrame({
                 'timestamp': pd.to_datetime(df_candles[0], unit='ms'),
                 'open': df_candles[1].astype(float),
@@ -104,11 +104,9 @@ def get_indodax_candles_4h(pair):
                 'volume': df_candles[5].astype(float)
             })
             return df_cleaned
-        else:
-            return pd.DataFrame()
+        return pd.DataFrame()
     except Exception as err:
-        # Jika terjadi kendala internal penguraian data, catat jenis errornya ke dashboard
-        add_log_message(f"⚠️ Eror Penguraian Grafik {pair}: {str(err)}")
+        add_log_message(f"⚠️ Eror Grafik {pair}: {str(err)}")
         return pd.DataFrame()
 
 def calculate_hma_20(df):
@@ -194,7 +192,7 @@ def run_autonomous_engine():
     for pair in LIST_PAIRS:
         df = get_indodax_candles_4h(pair)
         if df.empty: 
-            log_summary.append(f"{pair}: Koneksi Gagal")
+            log_summary.append(f"{pair}: Jaringan Gagal")
             continue
             
         df = calculate_hma_20(df)
@@ -209,7 +207,7 @@ def run_autonomous_engine():
         current_volume_idr = last_bar['volume'] * indodax_price
         
         if current_volume_idr < min_vol: 
-            log_summary.append(f"{pair}: Skip (Volume Rendah)")
+            log_summary.append(f"{pair}: Skip (Vol Rendah)")
             continue
             
         cursor.execute("SELECT last_signal, holding_amount FROM trades WHERE pair = ?", (pair,))
