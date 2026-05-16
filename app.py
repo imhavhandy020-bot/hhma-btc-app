@@ -69,48 +69,50 @@ def add_log_message(message):
         pass
 
 # =====================================================================
-# 3. PENARIK DATA GRAFIK JALUR UTAMA INDODAX TRADINGVIEW (KEBAL BLOKIR)
+# 3. PENARIK DATA GRAFIK JALUR API V2 INDODAX (ANTI-BLOKIR & KONSISTEN)
 # =====================================================================
 def get_indodax_candles_4h(pair):
-    """Mengambil riwayat lilin 4 jam langsung dari server Chart TradingView Indodax"""
+    """Mengambil riwayat data pasar harian langsung dari API V2 Historikal Inti Indodax"""
     try:
-        # Mengubah format ke string gabungan kecil sesuai standard URL Indodax (e.g., 'btcidr')
+        # Mengubah BTC/IDR menjadi string kecil murni 'btcidr' sesuai format API V2
         clean_pair = pair.lower().replace("/", "")
-        url = "https://indodax.com"
         
-        end_time = int(time.time())
-        start_time = end_time - (120 * 4 * 3600)  # Mengambil 120 bar ke belakang
+        # Endpoint V2 historical sangat longgar dan kebal dari blokir firewall
+        url = f"https://indodax.com{clean_pair}/historical"
         
-        params = {
-            'symbol': clean_pair.upper(),
-            'resolution': '240',  # '240' menit = Kunci Mati Timeframe 4 Jam
-            'from': start_time,
-            'to': end_time
-        }
-        
-        response = requests.get(url, params=params, timeout=8)
+        response = requests.get(url, timeout=10)
         data = response.json()
         
-        if data.get('s') == 'ok':
-            # Mengurai susunan data TradingView asli bursa Indodax
+        # Pastikan data yang diterima berupa list array yang valid
+        if isinstance(data, list) and len(data) > 30:
+            df_raw = pd.DataFrame(data)
+            
+            # Memaksa nama kolom menjadi huruf kecil murni untuk menghindari error tipe data
+            df_raw.columns = [str(col).lower() for col in df_raw.columns]
+            
+            # Bangun susunan struktur lilin bursa secara presisi
             df_cleaned = pd.DataFrame({
-                'timestamp': pd.to_datetime(data['t'], unit='s'),
-                'open': pd.Series(data['o']).astype(float),
-                'high': pd.Series(data['h']).astype(float),
-                'low': pd.Series(data['l']).astype(float),
-                'close': pd.Series(data['c']).astype(float),
-                'volume': pd.Series(data['v']).astype(float)
+                'timestamp': pd.to_datetime(df_raw['timestamp'], unit='ms'),
+                'open': df_raw['open'].astype(float),
+                'high': df_raw['high'].astype(float),
+                'low': df_raw['low'].astype(float),
+                'close': df_raw['close'].astype(float),
+                'volume': df_raw['volume'].astype(float)
             })
+            
+            # Urutkan data dari baris terlama ke terbaru agar rolling matematika WMA/HMA benar
+            df_cleaned = df_cleaned.sort_values(by='timestamp', ascending=True).reset_index(drop=True)
             return df_cleaned
+            
         return pd.DataFrame()
-    except Exception as e:
+    except:
         return pd.DataFrame()
 
 # =====================================================================
-# TRANSLATE INDIKATOR HMA-20 (TIMEFRAME 4H)
+# TRANSLATE INDIKATOR HMA-20 (TIMEFRAME 4H ACUAN DATA V2)
 # =====================================================================
 def calculate_hma_20(df):
-    if df.empty or len(df) < 30: return df
+    if df.empty or len(df) < 25: return df
     
     def wma(series, p):
         weights = np.arange(1, p + 1)
@@ -135,7 +137,7 @@ def get_live_market_price(pair):
     clean_pair = pair.lower().replace("/", "_")
     url = f"https://indodax.com{clean_pair}"
     try:
-        res = requests.get(url, timeout=3).json()
+        res = requests.get(url, timeout=4).json()
         return float(res['ticker']['last'])
     except:
         return None
@@ -148,7 +150,7 @@ def get_indodax_balance():
     signature = hmac.new(bytes(SECRET_KEY, 'utf-8'), msg=bytes(query_string, 'utf-8'), digestmod=hashlib.sha512).hexdigest()
     headers = {"Key": API_KEY, "Sign": signature}
     try:
-        res = requests.post(url, data=payload, headers=headers, timeout=4).json()
+        res = requests.post(url, data=payload, headers=headers, timeout=5).json()
         if res.get('success') == 1 or res.get('success') == '1':
             return float(res['return']['balance']['idr'])
     except:
@@ -175,7 +177,7 @@ def execute_indodax_trade(pair, action, amount_or_coin):
         return {"success": 0, "error": "Timeout"}
 
 # =====================================================================
-# 5. ENGINE UTAMA: PEMINDAIAN MANDIRI JALUR DOMESTIK INDODAX
+# 5. ENGINE UTAMA: PEMINDAIAN MANDIRI JALUR PRIVATE API V2
 # =====================================================================
 def run_autonomous_engine():
     cursor = db_conn.cursor()
@@ -190,11 +192,10 @@ def run_autonomous_engine():
     saldo_saat_ini = get_indodax_balance()
     
     for pair in LIST_PAIRS:
-        # Menarik data market asli buatan pasar Indodax (Bebas Reject Internasional)
         df = get_indodax_candles_4h(pair)
         
         if df.empty: 
-            add_log_message(f"🔍 {pair} | Status: ❌ Data Bursa Kosong")
+            add_log_message(f"🔍 {pair} | Status: ❌ Jalur Utama Diblokir")
             continue
             
         df = calculate_hma_20(df)
@@ -209,7 +210,6 @@ def run_autonomous_engine():
         indodax_price = get_live_market_price(pair)
         if indodax_price is None: indodax_price = last_bar['close']
         
-        # Saringan volume langsung dari total perputaran Rupiah asli Indodax
         current_volume_idr = last_bar['volume'] * indodax_price
         
         if current_volume_idr < min_vol: 
@@ -220,7 +220,7 @@ def run_autonomous_engine():
         row = cursor.fetchone()
         last_signal, holding_amount = row if row else ("NONE", 0.0)
         
-        # CETAK DATA VALID: Log terpisah per koin memunculkan warna tren detik ini
+        # LAPORAN SUKSES: Menampilkan arah tren sinyal asli koin berjalan detik ini
         add_log_message(f"🔍 {pair} | Sinyal Tren: {current_color} | Posisi SQLite: {last_signal}")
         
         # LOGIKA BUY (OFFSET -1 TV)
@@ -278,7 +278,7 @@ try:
         
         if row and str(row[0]) == 'BUY':
             entry_price = float(row[1])
-            holding_amount = float(row[2])
+            holding_amount = float(row[4])
             posisi = "🛒 BUYING"
             if live_price is None: live_price = entry_price
             current_value_idr = holding_amount * live_price
@@ -329,7 +329,7 @@ else:
     col_pnl.metric("Total Loss Gabungan", f"{total_pnl_pct:.2f}%", delta=f"Rp {akumulasi_pnl_idr:,.0f}")
 st.markdown("---")
 
-st.markdown("#### 📋 Status Posisi Semua Aset Aktif")
+st.markdown("#### 📋 Status Pos Positions Semua Aset")
 if live_data:
     st.dataframe(pd.DataFrame(live_data), use_container_width=True, hide_index=True)
 
@@ -354,8 +354,8 @@ if st.sidebar.button("💾 Terapkan Batas Risiko"):
     st.sidebar.success("Parameter risiko tersimpan ke Cloud!")
 
 # =====================================================================
-# JEDA KESELAMATAN ANTI-BAN BURSA INDODAX (60 DETIK / 1 MENIT)
+# INTERVAL AUTOREFRESH TINGGI (60 DETIK AMAN)
 # =====================================================================
 run_autonomous_engine()
-time.sleep(60)  # Detak jantung kilat aman: Bot scan ulang setiap 1 menit sekali
+time.sleep(60)
 st.rerun()
