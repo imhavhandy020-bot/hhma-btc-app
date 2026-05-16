@@ -16,24 +16,23 @@ TP_PERSEN = 5.0  # Take Profit 5%
 SL_PERSEN = 2.0  # Stop Loss 2%
 
 tf.set_page_config(page_title="Indodax Multi-Pair Pro", layout="wide")
-tf.title("🤖 Bot Trading Indodax Multi-Pair Pro (Dengan TP/SL)")
+tf.title("🤖 Bot Trading Indodax Multi-Pair Pro (Fixed KeyError)")
 
-# --- INITIALISASI DATABASE PERMANEN ---
+# --- INITIALISASI & MIGRASI DATABASE PERMANEN ---
 def init_db():
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
-    # Tabel Posisi ditingkatkan untuk menyimpan target TP & SL
+    
+    # 1. Buat tabel dasar jika belum ada
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS posisi (
             pair TEXT PRIMARY KEY,
             status TEXT,
             harga_beli REAL,
-            harga_tp REAL,
-            harga_sl REAL,
             waktu_eksekusi TEXT
         )
     ''')
-    # Tabel Log Riwayat Transaksi
+    
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS riwayat (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -45,13 +44,24 @@ def init_db():
         )
     ''')
     
-    # Cek dan isi data awal jika tabel kosong
+    # 2. AUTO-MIGRASI: Tambah kolom baru jika database lama masih memakai struktur lama
+    cursor.execute("PRAGMA table_info(posisi)")
+    kolom_ada = [info[1] for info in cursor.fetchall()]
+    
+    if "harga_tp" not in kolom_ada:
+        cursor.execute("ALTER TABLE posisi ADD COLUMN harga_tp REAL DEFAULT 0.0")
+    if "harga_sl" not in kolom_ada:
+        cursor.execute("ALTER TABLE posisi ADD COLUMN harga_sl REAL DEFAULT 0.0")
+        
+    # 3. Isi data awal jika baris pair belum terdaftar
     cursor.execute("SELECT COUNT(*) FROM posisi WHERE pair = ?", (PAIR_UTAMA,))
-    if cursor.fetchone() == 0:
-        cursor.execute("INSERT INTO posisi VALUES (?, ?, ?, ?, ?, ?)", (PAIR_UTAMA, "CARI_BUY", 0.0, 0.0, 0.0, "-"))
+    if cursor.fetchone()[0] == 0:
+        cursor.execute("INSERT INTO posisi VALUES (?, ?, ?, ?, ?, ?)", (PAIR_UTAMA, "CARI_BUY", 0.0, "-", 0.0, 0.0))
+        
     conn.commit()
     conn.close()
 
+# Jalankan inisialisasi dan migrasi database sebelum membaca data
 init_db()
 
 # --- STANDALONE MOCK ENGINE (Anti-Blokir & Delay) ---
@@ -95,14 +105,13 @@ def dapatkan_status():
     conn = sqlite3.connect(DB_NAME)
     df = pd.read_sql(f"SELECT * FROM posisi WHERE pair='{PAIR_UTAMA}'", conn)
     conn.close()
-    return df.iloc[0]
+    return df.iloc[0] if not df.empty else None
 
 def eksekusi_buy(harga):
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     waktu_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     
-    # Hitung target TP dan SL otomatis
     tp_harga = harga * (1 + (TP_PERSEN / 100))
     sl_harga = harga * (1 - (SL_PERSEN / 100))
     
@@ -143,22 +152,22 @@ hma_aktif = bar_terakhir['hma_signal']
 
 status_sekarang = dapatkan_status()
 
-# Logika Evaluasi Aksi Posisi
-if status_sekarang['status'] == "CARI_BUY":
-    # Sinyal beli dari HMA
-    if harga_live > hma_aktif:
-        eksekusi_buy(harga_live)
+if status_sekarang is not None:
+    if status_sekarang['status'] == "CARI_BUY":
+        if harga_live > hma_aktif:
+            eksekusi_buy(harga_live)
 
-elif status_sekarang['status'] == "BUY_SUCCESS":
-    # 1. Proteksi Utama: Cek Target Take Profit
-    if harga_live >= status_sekarang['harga_tp']:
-        eksekusi_sell(harga_live, f"TAKE PROFIT HIT ({TP_PERSEN}%)")
-    # 2. Proteksi Utama: Cek Target Stop Loss
-    elif harga_live <= status_sekarang['harga_sl']:
-        eksekusi_sell(harga_live, f"STOP LOSS HIT (-{SL_PERSEN}%)")
-    # 3. Sinyal Keluar Alternatif: HMA Cross Down
-    elif harga_live < hma_aktif:
-        eksekusi_sell(harga_live, "HMA CROSS DOWN")
+    elif status_sekarang['status'] == "BUY_SUCCESS":
+        # Proteksi Berbasis Nilai Numerik Aman
+        batasi_tp = float(status_sekarang['harga_tp'])
+        batasi_sl = float(status_sekarang['harga_sl'])
+        
+        if harga_live >= batasi_tp and batasi_tp > 0:
+            eksekusi_sell(harga_live, f"TAKE PROFIT HIT ({TP_PERSEN}%)")
+        elif harga_live <= batasi_sl and batasi_sl > 0:
+            eksekusi_sell(harga_live, f"STOP LOSS HIT (-{SL_PERSEN}%)")
+        elif harga_live < hma_aktif:
+            eksekusi_sell(harga_live, "HMA CROSS DOWN")
 
 # --- ANTARMUKA STREAMLIT UI ---
 status_terbaru = dapatkan_status()
@@ -167,9 +176,8 @@ col1, col2, col3, col4 = tf.columns(4)
 col1.metric("Pair Pantauan", PAIR_UTAMA)
 col2.metric("Harga Live", f"Rp {harga_live:,.0f}")
 col3.metric(f"HMA-20 (4h Offset -1)", f"Rp {hma_aktif:,.0f}")
-col4.metric("Status Bot", status_terbaru['status'])
+col4.metric("Status Bot", status_terbaru['status'] if status_terbaru is not None else "-")
 
-# Baris parameter proteksi
 tf.markdown(f"**🛡️ Pengaman Aktif:** Take Profit: `{TP_PERSEN}%` | Stop Loss: `{SL_PERSEN}%`")
 
 tf.subheader("📊 Analisis Data Real-Time")
@@ -179,14 +187,15 @@ col_status, col_log = tf.columns(2)
 
 with col_status:
     tf.markdown("### 📌 Posisi & Batas Pengaman")
-    tf.json({
-        "Pair": status_terbaru['pair'],
-        "Status Order": status_terbaru['status'],
-        "Harga Beli": f"Rp {status_terbaru['harga_beli']:,.0f}",
-        "Batas Target TP": f"Rp {status_terbaru['harga_tp']:,.0f}",
-        "Batas Resiko SL": f"Rp {status_terbaru['harga_sl']:,.0f}",
-        "Waktu Sinyal": status_terbaru['waktu_eksekusi']
-    })
+    if status_terbaru is not None:
+        tf.json({
+            "Pair": status_terbaru['pair'],
+            "Status Order": status_terbaru['status'],
+            "Harga Beli": f"Rp {status_terbaru['harga_beli']:,.0f}",
+            "Batas Target TP": f"Rp {status_terbaru['harga_tp']:,.0f}",
+            "Batas Resiko SL": f"Rp {status_terbaru['harga_sl']:,.0f}",
+            "Waktu Sinyal": status_terbaru['waktu_eksekusi']
+        })
 
 with col_log:
     tf.markdown("### 📜 Riwayat Transaksi (Database)")
