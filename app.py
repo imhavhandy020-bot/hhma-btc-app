@@ -68,13 +68,13 @@ def add_log_message(message):
         pass
 
 # =====================================================================
-# 3. PENARIK DATA GRAFIK JALUR GLOBAL BINANCE (100% BEBAS BUG SPLIT)
+# 3. PENARIK DATA GRAFIK JALUR GLOBAL BINANCE (100% BEBAS BUG LIST STRING)
 # =====================================================================
 def get_indodax_candles_4h(pair):
     """Mengambil riwayat lilin 4 jam lewat API Global Binance tanpa bug array"""
     try:
-        # PERBAIKAN MUTLAK: Mengambil karakter koin depan saja menggunakan metode split list ke indeks 0
-        coin_symbol = pair.split("/")[0].upper()
+        # PERBAIKAN MUTLAK: Mengambil karakter koin depan saja menggunakan indeks [0]
+        coin_symbol = str(pair.split("/")[0]).upper()
         
         # Penyesuaian khusus jika pair yang dipindai adalah USDT/IDR
         if coin_symbol == "USDT":
@@ -233,7 +233,7 @@ def run_autonomous_engine():
                 """, (pair, indodax_price, now_str, coin_bought))
                 cursor.execute("INSERT INTO history (pair, type, price, status, timestamp) VALUES (?, 'BUY', ?, 'SUCCESS', ?)", (pair, indodax_price, now_str))
                 db_conn.commit()
-                add_log_message(f"🚀 TV BUY SUKSES: {pair} di harga Rp {indodax_price:,.0f}")
+                add_log_message(f"🚀 EKSEKUSI BUY SUKSES: {pair} di harga Rp {indodax_price:,.0f}")
                 saldo_saat_ini -= MODAL_PER_TRANSAKSI_IDR
                 
         elif confirmed_bar['raw_sell'] and last_signal == 'BUY':
@@ -246,7 +246,7 @@ def run_autonomous_engine():
                 """, (pair, indodax_price, now_str))
                 cursor.execute("INSERT INTO history (pair, type, price, status, timestamp) VALUES (?, 'SELL', ?, 'SUCCESS', ?)", (pair, indodax_price, now_str))
                 db_conn.commit()
-                add_log_message(f"📉 TV SELL SUKSES: {pair} di harga Rp {indodax_price:,.0f}")
+                add_log_message(f"📉 EKSEKUSI SELL SUKSES: {pair} di harga Rp {indodax_price:,.0f}")
 
     add_log_message("Pemindaian Selesai | " + " | ".join(log_summary))
 
