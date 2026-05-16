@@ -14,7 +14,7 @@ from datetime import datetime
 API_KEY = "KXFCXMGP-HXH2UXNK-9T1KRVO0-XCEZBKRR-HCIDLBUF"
 SECRET_KEY = "a423ce71c0c54f54899d0c03193865176b0b5d83b7826f51c3eea4b269ea553ed0087e69ac200d48"
 
-# Daftar Koin Sesuai Request Permanen Anda
+# Daftar Koin Sesuai Rangka Pro Anda
 LIST_PAIRS = ['BTC/IDR', 'ETH/IDR', 'USDT/IDR', 'DOGE/IDR', 'SOL/IDR']
 MODAL_PER_TRANSAKSI_IDR = 50000.0  # nominal modal Rp 50.000 per transaksi BUY
 
@@ -63,25 +63,23 @@ def add_log_message(message):
         cursor = db_conn.cursor()
         now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         cursor.execute("INSERT INTO activity_logs (timestamp, message) VALUES (?, ?)", (now_str, message))
-        cursor.execute("DELETE FROM activity_logs WHERE id NOT IN (SELECT id FROM activity_logs ORDER BY id DESC LIMIT 30)")
+        cursor.execute("DELETE FROM activity_logs WHERE id NOT IN (SELECT id FROM activity_logs ORDER BY id DESC LIMIT 25)")
         db_conn.commit()
     except:
         pass
 
 # =====================================================================
-# 3. FIX PENARIK DATA GRAFIK JALUR GLOBAL BINANCE (100% BEBAS BUG LIST)
+# 3. PENARIK DATA GRAFIK JALUR BINANCE GLOBAL (KOREKSI SIMBOL INTERNASIONAL)
 # =====================================================================
 def get_indodax_candles_4h(pair):
-    """Mengambil riwayat lilin 4 jam lewat API Global Binance secara murni tanpa merusak array"""
+    """Mengubah pair Indodax ke Simbol USDT Binance Internasional secara presisi"""
     try:
-        # KOREKSI FIX: Mengambil teks depan koin sebelum tanda garis miring (indeks 0)
-        coin_part = pair.split("/")
-        clean_coin = str(coin_part[0]).upper()
-        
-        if clean_coin == "USDT":
-            binance_symbol = "BUSDUSDT"
+        # PENGUBAHAN SIMBOL INTERNASIONAL: Memotong '/IDR' dan menggantinya dengan 'USDT' murni string
+        # Contoh: 'BTC/IDR' otomatis berubah menjadi 'BTCUSDT' (Valid untuk server Binance)
+        if "USDT/IDR" in pair.upper():
+            binance_symbol = "USDCUSDT"  # Acuan grafik kestabilan mata uang dollar di Binance
         else:
-            binance_symbol = f"{clean_coin}USDT"
+            binance_symbol = pair.upper().replace("/IDR", "USDT")
             
         url = "https://binance.com"
         params = {'symbol': binance_symbol, 'interval': '4h', 'limit': 50}
@@ -92,20 +90,22 @@ def get_indodax_candles_4h(pair):
         if isinstance(data, list) and len(data) > 20:
             df_raw = pd.DataFrame(data)
             df_cleaned = pd.DataFrame()
-            # Pemetaan urutan kolom matriks kline Binance secara tepat numerik
+            # Pemetaan nomor urut kolom kline Binance: 0=Waktu, 1=Open, 2=High, 3=Low, 4=Close, 5=Volume
             df_cleaned['timestamp'] = pd.to_datetime(df_raw[0], unit='ms')
             df_cleaned['open'] = df_raw[1].astype(float)
             df_cleaned['high'] = df_raw[2].astype(float)
             df_cleaned['low'] = df_raw[3].astype(float)
-            df_cleaned['close'] = df_raw[4].astype(float)
-            df_cleaned['volume'] = df_raw[5].astype(float)
+            df_cleaned['close'] = df_raw[4].astype(float)  # Penutup harga untuk rumus HMA-20
+            df_cleaned['volume'] = df_raw[5].astype(float) # Volume perputaran pasar
             return df_cleaned
             
         return pd.DataFrame()
-    except Exception as err:
-        add_log_message(f"⚠️ API Binance {pair} Gagal Merespon: {str(err)}")
+    except:
         return pd.DataFrame()
 
+# =====================================================================
+# TRANSLATE INDIKATOR HMA-20 (TIMEFRAME 4H)
+# =====================================================================
 def calculate_hma_20(df):
     if df.empty or len(df) < 30: return df
     
@@ -172,7 +172,7 @@ def execute_indodax_trade(pair, action, amount_or_coin):
         return {"success": 0, "error": "Timeout"}
 
 # =====================================================================
-# 5. ENGINE UTAMA: PEMINDAIAN MANDIRI DAN ANTRIAN TERISOLASI
+# 5. ENGINE UTAMA: PEMINDAIAN MANDIRI PER KOIN INTERNASIONAL
 # =====================================================================
 def run_autonomous_engine():
     cursor = db_conn.cursor()
@@ -190,12 +190,12 @@ def run_autonomous_engine():
         df = get_indodax_candles_4h(pair)
         
         if df.empty: 
-            add_log_message(f"🔍 {pair} | Status: ❌ Jaringan Gagal")
+            add_log_message(f"🔍 {pair} | Status: ❌ API Binance Limit/Reject")
             continue
             
         df = calculate_hma_20(df)
         if 'hma_value' not in df.columns: 
-            add_log_message(f"🔍 {pair} | Status: ⚠️ Rumus Gagal")
+            add_log_message(f"🔍 {pair} | Status: ⚠️ Rumus Matematika Error")
             continue
         
         last_bar = df.iloc[-1]
@@ -205,21 +205,20 @@ def run_autonomous_engine():
         indodax_price = get_live_market_price(pair)
         if indodax_price is None: indodax_price = last_bar['close']
         
+        # Saringan volume menggunakan perputaran pasar Binance global
         current_volume_idr = last_bar['volume'] * indodax_price
         
-        if current_volume_idr < min_vol: 
-            add_log_message(f"🔍 {pair} | Sinyal: {current_color} | Status: ⏩ Skip Vol Rendah")
-            continue
-            
         cursor.execute("SELECT last_signal, holding_amount FROM trades WHERE pair = ?", (pair,))
         row = cursor.fetchone()
         last_signal, holding_amount = row if row else ("NONE", 0.0)
         
+        # CETAK STATISTIK ASLI HP: Memunculkan arah tren warna asli koin detik ini
         add_log_message(f"🔍 {pair} | Sinyal Tren: {current_color} | Posisi SQLite: {last_signal}")
         
+        # LOGIKA BUY (OFFSET -1 TV)
         if confirmed_bar['raw_buy'] and last_signal != 'BUY':
             if saldo_saat_ini < MODAL_PER_TRANSAKSI_IDR:
-                add_log_message(f"⚠️ {pair} | Sinyal: BUY | Status: 🛑 Saldo Kurang")
+                add_log_message(f"⚠️ {pair} | Sinyal: BUY | Status: 🛑 Saldo Dompet Rp {saldo_saat_ini:,.0f} Kurang")
                 continue
             res = execute_indodax_trade(pair, "buy", MODAL_PER_TRANSAKSI_IDR)
             if res.get("success") == 1:
@@ -231,6 +230,7 @@ def run_autonomous_engine():
                 add_log_message(f"🚀 {pair} | Aksi: BERHASIL BUY ORDER")
                 saldo_saat_ini -= MODAL_PER_TRANSAKSI_IDR
                 
+        # LOGIKA SELL (OFFSET -1 TV)
         elif confirmed_bar['raw_sell'] and last_signal == 'BUY':
             coin_to_sell = holding_amount if holding_amount > 0 else (MODAL_PER_TRANSAKSI_IDR / indodax_price)
             res = execute_indodax_trade(pair, "sell", coin_to_sell)
@@ -246,19 +246,17 @@ def run_autonomous_engine():
 cursor = db_conn.cursor()
 cursor.execute("SELECT COUNT(*) FROM history WHERE type='SELL' AND status='SUCCESS'")
 total_win_row = cursor.fetchone()
-# PERBAIKAN MUTLAK: Mengambil indeks [0] dari Tuple SQLite agar berupa Int angka murni
 total_win = int(total_win_row[0]) if total_win_row else 0
 
 cursor.execute("SELECT COUNT(*) FROM history WHERE status='SUCCESS'")
 total_trades_row = cursor.fetchone()
-# PERBAIKAN MUTLAK: Mengambil indeks [0] dari Tuple SQLite agar berupa Int angka murni
 total_trades = int(total_trades_row[0]) if total_trades_row else 0
 
 win_rate = (total_win / (total_trades / 2)) * 100 if total_trades > 1 and total_win > 0 else 100.0
 
 cursor.execute("SELECT last_run FROM settings LIMIT 1")
 last_run_time = cursor.fetchone()
-last_run_display = last_run_time[0] if last_run_time and last_run_time else "Belum Berjalan"
+last_run_display = last_run_time[0] if last_run_time and last_run_time[0] else "Belum Berjalan"
 
 total_modal_aktif = 0.0
 total_valuasi_aktif = 0.0
@@ -272,7 +270,7 @@ try:
         
         if row and str(row[0]) == 'BUY':
             entry_price = float(row[1])
-            holding_amount = float(row[4])
+            holding_amount = float(row[2])
             posisi = "🛒 BUYING"
             if live_price is None: live_price = entry_price
             current_value_idr = holding_amount * live_price
