@@ -21,18 +21,15 @@ MODAL_PER_TRANSAKSI_IDR = 50000.0  # Rp 50.000 per eksekusi BUY pasar
 # 2. SISTEM MEMORI PERMANEN & PENYEMBUHAN DATABASE TOTAL (ANTI-CRASH)
 # =====================================================================
 def init_db():
-    """Inisialisasi tabel basis data dengan reset otomatis jika struktur rusak"""
     conn = sqlite3.connect('trading_bot.db', check_same_thread=False, timeout=20)
     cursor = conn.cursor()
     
-    # Hancurkan tabel trades lama jika susunan kolom terbukti tidak valid
     try:
         cursor.execute("SELECT pair, last_signal, entry_price, timestamp, holding_amount FROM trades LIMIT 1")
     except sqlite3.OperationalError:
         cursor.execute("DROP TABLE IF EXISTS trades")
         conn.commit()
     
-    # Buat ulang tabel trades dengan susunan kolom murni dan mutlak
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS trades (
             pair TEXT PRIMARY KEY, 
@@ -43,7 +40,6 @@ def init_db():
         )
     """)
     
-    # Pastikan tabel log riwayat transaksi ada
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS history (
             id INTEGER PRIMARY KEY AUTOINCREMENT, 
@@ -55,7 +51,6 @@ def init_db():
         )
     """)
     
-    # Pastikan tabel konfigurasi risiko ada dan memiliki kolom lengkap
     try:
         cursor.execute("SELECT last_run FROM settings LIMIT 1")
     except sqlite3.OperationalError:
@@ -72,7 +67,6 @@ def init_db():
     conn.commit()
     return conn
 
-# Hubungkan basis data secara global
 db_conn = init_db()
 
 # =====================================================================
@@ -110,6 +104,19 @@ def calculate_hma_20(df):
     df['hma_20'] = wma(raw_hma, sqrt_period)
     df['hma_color'] = np.where(df['hma_20'] > df['hma_20'].shift(1), 'Green', 'Red')
     return df
+
+# =====================================================================
+# INTERFACES: AMBIL HARGA LIVE TICKER (UNTUK HITUNG PROFIT RUNNING)
+# =====================================================================
+def get_live_market_price(pair):
+    """Mengambil harga pasar detik ini langsung dari ticker publik Indodax"""
+    clean_pair = pair.lower().replace("/", "_")
+    url = f"https://indodax.com{clean_pair}"
+    try:
+        res = requests.get(url, timeout=3).json()
+        return float(res['ticker']['last'])
+    except:
+        return None
 
 # =====================================================================
 # 4. PRIVATE TRADE API INDODAX SIGNATURE (MARKET ORDER AUTOMATION)
@@ -197,11 +204,11 @@ def run_autonomous_engine():
 cursor = db_conn.cursor()
 cursor.execute("SELECT COUNT(*) FROM history WHERE type='SELL' AND status='SUCCESS'")
 total_win_row = cursor.fetchone()
-total_win = total_win_row[0] if total_win_row else 0
+total_win = total_win_row if total_win_row else 0
 
 cursor.execute("SELECT COUNT(*) FROM history WHERE status='SUCCESS'")
 total_trades_row = cursor.fetchone()
-total_trades = total_trades_row[0] if total_trades_row else 0
+total_trades = total_trades_row if total_trades_row else 0
 
 if total_trades > 1 and total_win > 0:
     win_rate = (total_win / (total_trades / 2)) * 100
@@ -210,33 +217,67 @@ else:
 
 cursor.execute("SELECT last_run FROM settings LIMIT 1")
 last_run_time = cursor.fetchone()
-last_run_display = last_run_time[0] if last_run_time and last_run_time[0] else "Belum Berjalan"
+last_run_display = last_run_time if last_run_time and last_run_time else "Belum Berjalan"
 
 st.markdown("### 🛡️ Indodax Multi-Pair Pro Server")
 col1, col2 = st.columns(2)
 col1.metric("Win Rate Bot", f"{win_rate:.1f}%")
 
-# PERBAIKAN TOTAL: Memastikan waktu yang dikirim ke st.metric berupa teks murni (String)
 if last_run_display and " " in last_run_display:
-    waktu_saja = last_run_display.split(" ")[1]  # Mengambil bagian jam (String)
+    waktu_saja = last_run_display.split(" ")
     col2.metric("Server Terakhir Scan", str(waktu_saja))
 else:
     col2.metric("Server Terakhir Scan", str(last_run_display))
 
+# =====================================================================
+# MODUL LIVE PROFIT: MODIFIKASI TABEL RUNNING TRADES
+# =====================================================================
 st.markdown("#### 📋 Running Trades (Status Posisi)")
 try:
-    df_running = pd.read_sql_query("""
-        SELECT pair as 'Pair', last_signal as 'Posisi', 
-        entry_price as 'Harga Masuk', timestamp as 'Waktu Pemicu' 
+    # Ambil data posisi beli aktif dari SQLite
+    df_raw = pd.read_sql_query("""
+        SELECT pair, entry_price, holding_amount, timestamp 
         FROM trades WHERE last_signal='BUY'
     """, db_conn)
 
-    if df_running.empty:
+    if df_raw.empty:
         st.write("💡 *Semua aset sedang clean (posisi kosong/terjual).*")
     else:
-        st.dataframe(df_running, use_container_width=True, hide_index=True)
-except Exception as database_error:
-    st.write("🔄 *Sedang menata ulang tabel database baru di Server Cloud...*")
+        live_data = []
+        for index, row in df_raw.iterrows():
+            pair = row['pair']
+            entry_price = float(row['entry_price'])
+            holding_amount = float(row['holding_amount'])
+            waktu = row['timestamp']
+            
+            # Ambil harga market terkini untuk hitung live profit
+            live_price = get_live_market_price(pair)
+            if live_price is None:
+                live_price = entry_price # Fallback jika API delay
+                
+            # Rumus Hitung Persentase & Nominal Profit Rupiah
+            profit_pct = ((live_price - entry_price) / entry_price) * 100
+            current_value_idr = holding_amount * live_price
+            initial_value_idr = holding_amount * entry_price
+            profit_idr = current_value_idr - initial_value_idr
+            
+            # Berikan tanda plus (+) jika profit positif
+            sign = "+" if profit_idr >= 0 else ""
+            
+            live_data.append({
+                "Pair": pair,
+                "Harga Masuk": f"Rp {entry_price:,.0f}",
+                "Harga Live": f"Rp {live_price:,.0f}",
+                "Saldo Koin": f"{holding_amount:.6f}",
+                "Live Profit (IDR / %)": f"{sign}Rp {profit_idr:,.0f} ({sign}{profit_pct:.2f}%)",
+                "Waktu Beli": waktu
+            })
+            
+        df_display = pd.DataFrame(live_data)
+        st.dataframe(df_display, use_container_width=True, hide_index=True)
+        
+except Exception as e:
+    st.write("🔄 *Sedang menghitung live profit saldo di server...*")
 
 # 7. CONTROL PANEL SIDEBAR HP
 st.sidebar.header("⚙️ Manajemen Risiko")
