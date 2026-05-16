@@ -10,7 +10,7 @@ from datetime import datetime
 # ==============================================================================
 st.set_page_config(page_title="Indodax Pro Bot", layout="wide", initial_sidebar_state="collapsed")
 
-# CSS Kustom untuk memaksimalkan tampilan Monitor Chrome HP (Sudah Diperbaiki)
+# CSS Kustom untuk memaksimalkan tampilan Monitor Chrome HP
 st.markdown("""
     <style>
     .reportview-container .main .block-container { padding-top: 1rem; padding-bottom: 1rem; }
@@ -36,73 +36,78 @@ modal_per_trade = st.sidebar.number_input(
 min_volume_24h = st.sidebar.number_input("Min Vol 24J (USD)", min_value=0, value=50000, step=10000)
 bot_loop_interval = st.sidebar.slider("Interval Cek Bot (Menit)", min_value=1, max_value=60, value=5)
 
-# Simulasi API Key Aman (Terintegrasi via Streamlit Secrets / Kode Internal)
+# Simulasi API Key Aman
 API_KEY = st.sidebar.text_input("Indodax API Key", value="INTEGRATED_SECURE_KEY", type="password")
 API_SECRET = st.sidebar.text_input("Indodax Secret Key", value="INTEGRATED_SECURE_SECRET", type="password")
 
 # ==============================================================================
-# 2. INISIALISASI DATABASE (ANTI-RESET SQLITE)
+# 2. INISIALISASI DATABASE & MANAJEMEN KONEKSI AMAN (ANTI-LOCK)
 # ==============================================================================
-def init_db():
-    conn = sqlite3.connect('trading_bot.db')
-    cursor = conn.cursor()
-    # Tabel Posisi Permanen 5 Aset
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS positions (
-            pair TEXT PRIMARY KEY,
-            status TEXT,
-            buy_price REAL,
-            amount REAL,
-            last_update TEXT
-        )
-    """)
-    # Tabel Log Aktivitas
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS activity_logs (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            timestamp TEXT,
-            pair TEXT,
-            action TEXT,
-            message TEXT
-        )
-    """)
-    
-    # Isi data awal 5 aset permanen jika belum ada (Pengunci Status DB)
-    permanent_pairs = ['BTC/IDR', 'ETH/IDR', 'USDT/IDR', 'SOL/IDR', 'DOGE/IDR']
-    for pair in permanent_pairs:
-        cursor.execute("INSERT OR IGNORE INTO positions VALUES (?, ?, ?, ?, ?)", (pair, 'WAITING_BUY', 0.0, 0.0, datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
-    conn.commit()
-    conn.close()
+DB_FILE = 'trading_bot.db'
 
+def get_db_connection():
+    # Menambahkan timeout untuk mencegah DatabaseError akibat write-lock
+    return sqlite3.connect(DB_FILE, timeout=10)
+
+def init_db():
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        # Tabel Posisi Permanen 5 Aset
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS positions (
+                pair TEXT PRIMARY KEY,
+                status TEXT,
+                buy_price REAL,
+                amount REAL,
+                last_update TEXT
+            )
+        """)
+        # Tabel Log Aktivitas
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS activity_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT,
+                pair TEXT,
+                action TEXT,
+                message TEXT
+            )
+        """)
+        
+        # Isi data awal 5 aset permanen jika belum ada
+        permanent_pairs = ['BTC/IDR', 'ETH/IDR', 'USDT/IDR', 'SOL/IDR', 'DOGE/IDR']
+        for pair in permanent_pairs:
+            cursor.execute("INSERT OR IGNORE INTO positions VALUES (?, ?, ?, ?, ?)", 
+                           (pair, 'WAITING_BUY', 0.0, 0.0, datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
+        conn.commit()
+
+# Jalankan inisialisasi basis data pertama kali
 init_db()
 
 def get_positions():
-    conn = sqlite3.connect('trading_bot.db')
-    df = pd.read_sql_query("SELECT pair as 'Aset', status as 'Status', buy_price as 'Harga Beli', amount as 'Jumlah', last_update as 'Waktu Update' FROM positions", conn)
-    conn.close()
+    with get_db_connection() as conn:
+        query = "SELECT pair as 'Aset', status as 'Status', buy_price as 'Harga Beli', amount as 'Jumlah', last_update as 'Waktu Update' FROM positions"
+        df = pd.read_sql_query(query, conn)
     return df
 
 def get_logs():
-    conn = sqlite3.connect('trading_bot.db')
-    df = pd.read_sql_query("SELECT timestamp as 'Waktu', pair as 'Aset', action as 'Aksi', message as 'Detail' FROM activity_logs ORDER BY id DESC LIMIT 10", conn)
-    conn.close()
+    with get_db_connection() as conn:
+        query = "SELECT timestamp as 'Waktu', pair as 'Aset', action as 'Aksi', message as 'Detail' FROM activity_logs ORDER BY id DESC LIMIT 10"
+        df = pd.read_sql_query(query, conn)
     return df
 
 def add_log(pair, action, message):
-    conn = sqlite3.connect('trading_bot.db')
-    cursor = conn.cursor()
-    cursor.execute("INSERT INTO activity_logs (timestamp, pair, action, message) VALUES (?, ?, ?, ?)",
-                   (datetime.now().strftime('%H:%M:%S'), pair, action, message))
-    conn.commit()
-    conn.close()
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("INSERT INTO activity_logs (timestamp, pair, action, message) VALUES (?, ?, ?, ?)",
+                       (datetime.now().strftime('%H:%M:%S'), pair, action, message))
+        conn.commit()
 
 def update_position(pair, status, buy_price, amount):
-    conn = sqlite3.connect('trading_bot.db')
-    cursor = conn.cursor()
-    cursor.execute("UPDATE positions SET status=?, buy_price=?, amount=?, last_update=? WHERE pair=?",
-                   (status, buy_price, amount, datetime.now().strftime('%Y-%m-%d %H:%M:%S'), pair))
-    conn.commit()
-    conn.close()
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("UPDATE positions SET status=?, buy_price=?, amount=?, last_update=? WHERE pair=?",
+                       (status, buy_price, amount, datetime.now().strftime('%Y-%m-%d %H:%M:%S'), pair))
+        conn.commit()
 
 # ==============================================================================
 # 3. KONEKSI DATA CHART BINANCE GLOBAL & OPTIMASI LOGIKA HMA-20
@@ -121,8 +126,9 @@ def calculate_hma(series, period):
     return hma
 
 def fetch_binance_4h_signals(pair):
-    # Mapping pair Indodax ke Binance Global (Contoh: BTC/IDR -> BTCUSDT)
-    binance_symbol = pair.split('/')[0] + "USDT"
+    # Bersihkan penulisan dan petakan koin Indodax ke pasar Binance USDT
+    clean_pair = pair.replace('/IDR', '')
+    binance_symbol = f"{clean_pair}USDT"
     url = f"https://binance.com{binance_symbol}&interval=4h&limit=50"
     
     try:
@@ -134,7 +140,7 @@ def fetch_binance_4h_signals(pair):
         # Hitung HMA-20
         df['hma_20'] = calculate_hma(df['close'], 20)
         
-        # OPTIMASI SINYAL: Mengunci data pada Bar [-2] (offset=-1 dari candle berjalan)
+        # OPTIMASI SINYAL: Konfirmasi matang pada Bar [-2] (Mencegah Repainting)
         closed_price = df['close'].iloc[-2]
         hma_last_fixed = df['hma_20'].iloc[-2]
         hma_prev_fixed = df['hma_20'].iloc[-3]
@@ -153,7 +159,7 @@ def fetch_binance_4h_signals(pair):
         return "ERROR", 0.0, 0.0
 
 # ==============================================================================
-# 4. ENGINE SALDO & INTEGRASI DATA INDODAX
+# 4. ENGINE DATA PASAR
 # ==============================================================================
 def get_indodax_data():
     try:
@@ -170,9 +176,7 @@ saldo_idr_dompet = 1500000.0
 # ==============================================================================
 st.title("📊 Multi-Pair Pro Monitor")
 
-# Baris 1 Visual HP: Widget Ringkasan Utama (Metrik Pendek)
 col1, col2, col3 = st.columns(3)
-
 win_rate_sim = 68.5 
 total_profit_idr = 125000.0
 total_profit_pct = 8.33
@@ -186,21 +190,18 @@ with col3:
 
 st.markdown("---")
 
-# Logika Automasi Engine (Sistem Rem Saldo Terintegrasi)
+# Eksekusi Logika Sinyal & Sistem Rem Saldo Otomatis
 df_positions = get_positions()
 
 for idx, row in df_positions.iterrows():
     pair = row['Aset']
     current_status = row['Status']
     
-    # Ambil sinyal teroptimasi dari Binance 4H
     signal, target_price, vol_24h = fetch_binance_4h_signals(pair)
     
-    # Filter Minimum Volume 24J
     if vol_24h < min_volume_24h and signal != "ERROR":
         continue
         
-    # Eksekusi Logika Sinyal & Sistem Rem Saldo Otomatis
     if current_status == 'WAITING_BUY' and signal == 'BUY':
         if saldo_idr_dompet >= modal_per_trade:
             amount_to_buy = modal_per_trade / target_price
@@ -216,14 +217,13 @@ for idx, row in df_positions.iterrows():
         update_position(pair, 'WAITING_BUY', 0.0, 0.0)
         add_log(pair, 'SELL', f"Menjual seluruh aset ekivalen Rp{payout:,.0f} pada harga Rp{target_price:,.2f}")
 
-# Baris 2 Visual HP: Tabel Status Posisi 5 Aset Permanen
+# Menampilkan data tabel secara aman di HP
 st.subheader("📌 Status Posisi 5 Aset Permanen")
 st.table(get_positions())
 
-# Baris 3 Visual HP: Tabel Log Aktivitas Server
 st.subheader("📜 Log Aktivitas Server")
 st.table(get_logs())
 
-# Autorefresh halaman via Streamlit untuk monitor HP
+# Autorefresh aman untuk kestabilan SQLite Streamlit Cloud
 time.sleep(5)
 st.rerun()
