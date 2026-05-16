@@ -13,15 +13,15 @@ from urllib.parse import urlencode
 # ==========================================
 # 1. KONFIGURASI UTAMA LAYAR CHROME HP
 # ==========================================
-# Menggunakan layout "centered" agar seluruh komponen tersusun vertikal rapi di ponsel
 st.set_page_config(layout="centered", page_title="Indodax Pro Bot", page_icon="🤖")
 
 DB_NAME = 'trading_bot.db'
 
 def init_db():
-    """Inisialisasi database lokal SQLite agar anti-reset di Streamlit Cloud"""
+    """Inisialisasi database lokal SQLite secara paksa agar aman dari crash Pandas"""
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
+    # Membuat tabel trades secara terjamin
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS trades (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -35,6 +35,7 @@ def init_db():
             profit_persen REAL
         )
     ''')
+    # Membuat tabel settings
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS settings (
             key TEXT PRIMARY KEY,
@@ -47,26 +48,33 @@ def init_db():
 def get_setting(key, default=None):
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
-    cursor.execute("SELECT val FROM settings WHERE key = ?", (key,))
-    row = cursor.fetchone()
-    conn.close()
-    return row if row else default
+    try:
+        cursor.execute("SELECT val FROM settings WHERE key = ?", (key,))
+        row = cursor.fetchone()
+        return row[0] if row else default
+    except:
+        return default
+    finally:
+        conn.close()
 
 def set_setting(key, val):
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
-    cursor.execute("INSERT OR REPLACE INTO settings (key, val) VALUES (?, ?)", (key, str(val)))
-    conn.commit()
-    conn.close()
+    try:
+        cursor.execute("INSERT OR REPLACE INTO settings (key, val) VALUES (?, ?)", (key, str(val)))
+        conn.commit()
+    except:
+        pass
+    finally:
+        conn.close()
 
-# Jalankan inisialisasi DB di awal sistem
+# Wajib dijalankan di paling atas sebelum kode widget apapun!
 init_db()
 
 # ==========================================
 # 2. INTEGRASI PRIVATE TRADE API INDODAX
 # ==========================================
 def ambil_saldo_indodax(api_key, secret_key, pair):
-    """Memanggil metode 'getInfo' untuk sinkronisasi saldo dompet riil"""
     url_tapi = "https://indodax.com"
     nonce = int(time.time() * 1000)
     payload = {'method': 'getInfo', 'nonce': nonce}
@@ -83,12 +91,11 @@ def ambil_saldo_indodax(api_key, secret_key, pair):
         if hasil_json.get('success') == 1:
             balances = hasil_json['return']['balance']
             return {"success": True, "idr": float(balances.get('idr', 0.0)), "coin": float(balances.get(coin_code, 0.0)), "coin_symbol": coin_code.upper()}
-        return {"success": False, "error": hasil_json.get('error', 'Gagal Response API')}
+        return {"success": False, "error": hasil_json.get('error', 'Gagal API')}
     except Exception as e:
         return {"success": False, "error": str(e)}
 
 def kirim_order_indodax(api_key, secret_key, pair, tipe_aksi, nominal_idr=None, jumlah_coin=None):
-    """Mengirimkan eksekusi Market Order instan (Buy IDR / Sell Coin) ke Indodax"""
     pair_id = pair.replace('/', '_').lower()
     url_tapi = "https://indodax.com"
     nonce = int(time.time() * 1000)
@@ -116,8 +123,7 @@ def kirim_order_indodax(api_key, secret_key, pair, tipe_aksi, nominal_idr=None, 
 # ==========================================
 st.sidebar.header("⚙️ KONTROL KUNCI BOT")
 
-# Kolom kunci pengaman (Ketik untuk RUN, kosongkan/hapus untuk STOP)
-api_key_input = st.sidebar.text_input("🔑 API Key Indodax", type="password", help="Isi teks untuk mengaktifkan bot. Kosongkan untuk STOP total.")
+api_key_input = st.sidebar.text_input("🔑 API Key Indodax", type="password")
 secret_key_input = st.sidebar.text_input("🔒 Secret Key Indodax", type="password")
 
 bot_is_authenticated = bool(api_key_input and secret_key_input)
@@ -130,17 +136,8 @@ else:
 st.sidebar.markdown("---")
 st.sidebar.header("📊 PARAMETER TRADING")
 
-# Fitur Baru: Pengatur Modal Belanja Dinamis langsung dari Sidebar HP
-order_size_idr = st.sidebar.number_input(
-    "💰 Modal Belanja per Transaksi (IDR)", 
-    min_value=10000, 
-    max_value=100000000, 
-    value=100000, 
-    step=10000,
-    help="Jumlah uang Rupiah yang dipakai untuk BUY instan di market."
-)
-
-hma_period = st.sidebar.selectbox("Periode HMA (Rekomendasi: 20)", options=[5, 8, 14, 20, 50], index=3)
+order_size_idr = st.sidebar.number_input("💰 Modal Belanja per Transaksi (IDR)", min_value=10000, max_value=100000000, value=100000, step=10000)
+hma_period = st.sidebar.selectbox("Periode HMA (Rekomendasi: 20)", options=[5, 8, 14, 20, 34, 50], index=3)
 sl_input = st.sidebar.number_input("Stop Loss Fisik (%)", min_value=0.5, max_value=10.0, value=2.0, step=0.1)
 mode_dompet = st.sidebar.radio("Mode Akun", ["Demo/Simulasi", "Live Trading Real"])
 
@@ -170,7 +167,6 @@ def hitung_hma_dinamis(df, period):
 # ==========================================
 @st.cache_data(ttl=60)
 def fetch_market_data(pair):
-    """Simulasi pemanggilan data Candlestick 4h Indodax"""
     np.random.seed(42 if pair == 'BTC/IDR' else 24)
     dates = pd.date_range(end=datetime.now(), periods=100, freq='4h')
     close = 100000 + np.cumsum(np.random.randn(100) * 1500)
@@ -186,7 +182,6 @@ def fetch_market_data(pair):
 def jalankan_engine_bot(pair, df):
     df = hitung_hma_dinamis(df, hma_period)
     
-    # Mempertahankan keagresifan instan membaca bar berjalan index terakhir
     bar_berjalan = df.iloc[-1]
     bar_sebelumnya = df.iloc[-2]
     
@@ -202,9 +197,7 @@ def jalankan_engine_bot(pair, df):
     pemicu_aksi = None
     notif_pesan = "Kunci Pengaman Terbuka. Bot Berhenti." if not bot_is_authenticated else "Menunggu Sinyal Valid..."
     
-    # Eksekusi hanya berjalan jika kunci terverifikasi (Kunci Terpasang di HP)
     if bot_is_authenticated:
-        # --- LOGIKA EMERGENSI: JIKA POSISI LAGI AKTIF (BUY) ---
         if posisi_aktif == "TRUE":
             if harga_sekarang > highest_price:
                 highest_price = harga_sekarang
@@ -213,43 +206,33 @@ def jalankan_engine_bot(pair, df):
             persen_turun_dari_puncak = ((highest_price - harga_sekarang) / highest_price) * 100
             sudah_untung = harga_sekarang > (harga_masuk * 1.01)
             
-            # A. Trailing Take Profit (TTP 0.5% dari Puncak)
             if sudah_untung and persen_turun_dari_puncak >= 0.5:
                 pemicu_aksi = "SELL"
                 notif_pesan = "🎯 TRAILING TAKE PROFIT (TTP 0.5% Terkunci)"
-            # B. Stop Loss Fisik Sidebar
             elif harga_sekarang <= harga_masuk * (1 - (sl_input / 100)):
                 pemicu_aksi = "SELL"
                 notif_pesan = f"⚠️ STOP LOSS FISIK ({sl_input}%) TERJANGKAU"
-            # C. Proteksi Anti-Repaint (Warna HMA berbalik arah instan di bar berjalan)
             elif warna_sekarang == "MERAH":
                 pemicu_aksi = "SELL"
                 notif_pesan = "🚨 ANTI-REPAINT CUT-LOSS (CLOSED_BY_SIGNAL_DISAPPEARED)"
 
-        # --- LOGIKA PEMICU SINYAL BARU (WAJIB BERGANTIAN VIA DB) ---
         else:
             if warna_sekarang == "HIJAU" and warna_sebelumnya == "MERAH" and last_signal == "SELL":
                 pemicu_aksi = "BUY"
                 notif_pesan = "🚀 SINYAL BUY AGRESIF INSTAN VALID"
 
-        # --- EKSEKUSI TRANSAKSI LIVE & PENCATATAN SQLITE ---
         if pemicu_aksi:
             api_success = True
-            
-            # Eksekusi Order Riil ke Server Indodax jika Akun disetel Live
             if mode_dompet == "Live Trading Real":
                 if pemicu_aksi == "BUY":
-                    # Menggunakan nominal IDR dinamis dari input sidebar
                     res_api = kirim_order_indodax(api_key_input, secret_key_input, pair, "BUY", nominal_idr=order_size_idr)
                 else:
-                    # Mengosongkan volume koin (0.0) agar sistem melepas seluruh isi koin di dompet
                     res_api = kirim_order_indodax(api_key_input, secret_key_input, pair, "SELL", jumlah_coin=0.0)
                 
                 if res_api.get('success') != 1:
                     api_success = False
                     notif_pesan += f" | ❌ API Error: {res_api.get('error')}"
             
-            # Jika eksekusi sukses (atau mode simulasi), kunci status permanen ke SQLite
             if api_success:
                 conn = sqlite3.connect(DB_NAME)
                 cursor = conn.cursor()
@@ -281,8 +264,12 @@ def jalankan_engine_bot(pair, df):
 # ==========================================
 # 7. TAMPILAN LAYAR UTAMA CHROME HP (WIDGETS)
 # ==========================================
+# Proteksi Pembacaan Pandas: Jika tabel kosong / baru dibuat, buat DataFrame kosongan agar tidak crash
 conn = sqlite3.connect(DB_NAME)
-df_trades = pd.read_sql_query("SELECT * FROM trades WHERE tipe='SELL'", conn)
+try:
+    df_trades = pd.read_sql_query("SELECT * FROM trades WHERE tipe='SELL'", conn)
+except:
+    df_trades = pd.DataFrame(columns=['profit_idr'])
 conn.close()
 
 total_trades = len(df_trades)
@@ -290,13 +277,10 @@ win_trades = len(df_trades[df_trades['profit_idr'] > 0]) if total_trades > 0 els
 win_rate = (win_trades / total_trades) * 100 if total_trades > 0 else 0.0
 total_net_profit = df_trades['profit_idr'].sum() if total_trades > 0 else 0.0
 
-# Dropdown Pemilihan Aset Pair Aktif
-daftar_pair = ['BTC/IDR', 'ETH/IDR', 'USDT/IDR', 'SOL/IDR', 'DOGE/IDR']
-selected_pair = st.selectbox("🎯 Pilih Monitor Grafik Pair:", daftar_pair)
-
-# Sinkronisasi Dompet Riil/Demo secara Dinamis
 saldo_idr_tampil = 100000000.0
 saldo_coin_tampil = 8.12345678
+daftar_pair = ['BTC/IDR', 'ETH/IDR', 'USDT/IDR', 'SOL/IDR', 'DOGE/IDR']
+selected_pair = st.selectbox("🎯 Pilih Monitor Grafik Pair:", daftar_pair)
 coin_label = selected_pair.split('/')[0]
 
 if mode_dompet == "Live Trading Real" and bot_is_authenticated:
@@ -317,7 +301,7 @@ df_hasil, status_bot, live_price = jalankan_engine_bot(selected_pair, df_market)
 if bot_is_authenticated:
     st.success(f"🤖 **Status Sistem:** {status_bot} | **Harga:** Rp {live_price:,.2f}")
 else:
-    st.error(f"🛑 **Status Keamanan:** Kunci Terputus. Hubungkan Key di Sidebar untuk Menyalakan Mesin.")
+    st.error(f"🛑 **Status Keamanan:** Kunci Terputus. Hubungkan Key di Sidebar.")
 
 # ==========================================
 # 8. INTERFAS GRAFIK CANDLESTICK PLOTLY
@@ -333,7 +317,10 @@ st.plotly_chart(fig, use_container_width=True)
 # ==========================================
 st.subheader("📋 Catatan Log Jurnal Trading (SQLite)")
 conn = sqlite3.connect(DB_NAME)
-df_all_logs = pd.read_sql_query("SELECT timestamp, pair, tipe, harga, pemicu, profit_persen FROM trades ORDER BY id DESC LIMIT 5", conn)
+try:
+    df_all_logs = pd.read_sql_query("SELECT timestamp, pair, tipe, harga, pemicu, profit_persen FROM trades ORDER BY id DESC LIMIT 5", conn)
+except:
+    df_all_logs = pd.DataFrame()
 conn.close()
 
 if not df_all_logs.empty:
