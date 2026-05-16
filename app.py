@@ -102,8 +102,9 @@ def ambil_saldo_indodax(api_key, secret_key, pair):
     nonce = int(time.time() * 1000) + 2000
     payload = {'method': 'getInfo', 'nonce': nonce}
     
+    # FIX PERBAIKAN PERMANEN: Ambil teks indeks ke-0 lalu ubah ke lower() murni
     parts = pair.split('/')
-    coin_code = parts.lower() if len(parts) > 0 else "btc"
+    coin_code = parts[0].lower() if len(parts) > 0 else "btc"
     
     try:
         query_string = urlencode(payload)
@@ -274,10 +275,9 @@ total_net_profit = df_trades['profit_idr'].sum() if total_trades > 0 else 0.0
 daftar_pair = ['BTC/IDR', 'ETH/IDR', 'USDT/IDR', 'SOL/IDR', 'DOGE/IDR']
 selected_pair = st.selectbox("🎯 Pilih Monitor Grafik Pair:", daftar_pair)
 
-# Set nilai dasar 0 jika koneksi terputus
 saldo_idr_tampil = 0.0
 saldo_coin_tampil = 0.0
-coin_label = selected_pair.split('/')
+coin_label = selected_pair.split('/')[0]
 
 if bot_is_authenticated:
     data_dompet = ambil_saldo_indodax(api_key_input, secret_key_input, pair=selected_pair)
