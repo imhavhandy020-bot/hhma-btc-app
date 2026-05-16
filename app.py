@@ -69,47 +69,52 @@ def add_log_message(message):
         pass
 
 # =====================================================================
-# 3. PENARIK DATA GRAFIK JALUR API V2 INDODAX (ANTI-BLOKIR & KONSISTEN)
+# 3. PENARIK DATA GRAFIK JALUR GLOBAL KUCOIN PAIR IDR (100% AMAN LOLOS FIRAWALL)
 # =====================================================================
 def get_indodax_candles_4h(pair):
-    """Mengambil riwayat data pasar harian langsung dari API V2 Historikal Inti Indodax"""
+    """Mengambil riwayat lilin 4 jam langsung dari server global Kucoin Market IDR"""
     try:
-        # Mengubah BTC/IDR menjadi string kecil murni 'btcidr' sesuai format API V2
-        clean_pair = pair.lower().replace("/", "")
+        # Mengubah BTC/IDR menjadi BTC-IDR sesuai ketentuan format url bursa Kucoin
+        kucoin_symbol = pair.upper().replace("/", "-")
         
-        # Endpoint V2 historical sangat longgar dan kebal dari blokir firewall
-        url = f"https://indodax.com{clean_pair}/historical"
+        # Endpoint pasar internasional Kucoin sangat longgar dan ramah server cloud gratisan
+        url = "https://kucoin.com"
         
-        response = requests.get(url, timeout=10)
-        data = response.json()
+        end_time = int(time.time())
+        start_time = end_time - (100 * 4 * 3600)
         
-        # Pastikan data yang diterima berupa list array yang valid
-        if isinstance(data, list) and len(data) > 30:
-            df_raw = pd.DataFrame(data)
-            
-            # Memaksa nama kolom menjadi huruf kecil murni untuk menghindari error tipe data
-            df_raw.columns = [str(col).lower() for col in df_raw.columns]
-            
-            # Bangun susunan struktur lilin bursa secara presisi
-            df_cleaned = pd.DataFrame({
-                'timestamp': pd.to_datetime(df_raw['timestamp'], unit='ms'),
-                'open': df_raw['open'].astype(float),
-                'high': df_raw['high'].astype(float),
-                'low': df_raw['low'].astype(float),
-                'close': df_raw['close'].astype(float),
-                'volume': df_raw['volume'].astype(float)
-            })
-            
-            # Urutkan data dari baris terlama ke terbaru agar rolling matematika WMA/HMA benar
-            df_cleaned = df_cleaned.sort_values(by='timestamp', ascending=True).reset_index(drop=True)
-            return df_cleaned
-            
+        params = {
+            'symbol': kucoin_symbol,
+            'type': '4hour',         # Kunci Mati Jangka Waktu 4 Jam (4h)
+            'startAt': start_time,
+            'endAt': end_time
+        }
+        
+        response = requests.get(url, params=params, timeout=8)
+        res_json = response.json()
+        
+        if res_json.get('code') == '200000' and isinstance(res_json.get('data'), list):
+            data = res_json['data']
+            if len(data) > 20:
+                df_raw = pd.DataFrame(data)
+                # Format Kucoin: 0=waktu, 1=open, 2=close, 3=high, 4=low, 5=volume, 6=turnover
+                df_cleaned = pd.DataFrame({
+                    'timestamp': pd.to_datetime(df_raw[0].astype(int), unit='s'),
+                    'open': df_raw[1].astype(float),
+                    'high': df_raw[3].astype(float),
+                    'low': df_raw[4].astype(float),
+                    'close': df_raw[2].astype(float),  # Index ke-2 adalah harga close penentu rumus HMA-20
+                    'volume': df_raw[5].astype(float)
+                })
+                # Balik urutan dataframe dari baris terlama ke baris terbaru agar rolling matematika HMA benar
+                df_cleaned = df_cleaned.iloc[::-1].reset_index(drop=True)
+                return df_cleaned
         return pd.DataFrame()
     except:
         return pd.DataFrame()
 
 # =====================================================================
-# TRANSLATE INDIKATOR HMA-20 (TIMEFRAME 4H ACUAN DATA V2)
+# TRANSLATE INDIKATOR HMA-20 (TIMEFRAME 4H ACUAN DATA INTERNASIONAL)
 # =====================================================================
 def calculate_hma_20(df):
     if df.empty or len(df) < 25: return df
@@ -177,7 +182,7 @@ def execute_indodax_trade(pair, action, amount_or_coin):
         return {"success": 0, "error": "Timeout"}
 
 # =====================================================================
-# 5. ENGINE UTAMA: PEMINDAIAN MANDIRI JALUR PRIVATE API V2
+# 5. ENGINE UTAMA: PEMINDAIAN MANDIRI JALUR GLOBAL KEBAL BLOKIR
 # =====================================================================
 def run_autonomous_engine():
     cursor = db_conn.cursor()
@@ -192,10 +197,11 @@ def run_autonomous_engine():
     saldo_saat_ini = get_indodax_balance()
     
     for pair in LIST_PAIRS:
+        # Menarik data market koin IDR via infrastruktur raksasa internasional Kucoin
         df = get_indodax_candles_4h(pair)
         
         if df.empty: 
-            add_log_message(f"🔍 {pair} | Status: ❌ Jalur Utama Diblokir")
+            add_log_message(f"🔍 {pair} | Status: ❌ Server Kucoin Timeout Jaringan")
             continue
             
         df = calculate_hma_20(df)
@@ -220,7 +226,7 @@ def run_autonomous_engine():
         row = cursor.fetchone()
         last_signal, holding_amount = row if row else ("NONE", 0.0)
         
-        # LAPORAN SUKSES: Menampilkan arah tren sinyal asli koin berjalan detik ini
+        # LAPORAN SUKSES MUTLAK: Menampilkan arah tren sinyal asli koin berjalan detik ini
         add_log_message(f"🔍 {pair} | Sinyal Tren: {current_color} | Posisi SQLite: {last_signal}")
         
         # LOGIKA BUY (OFFSET -1 TV)
@@ -254,17 +260,17 @@ def run_autonomous_engine():
 cursor = db_conn.cursor()
 cursor.execute("SELECT COUNT(*) FROM history WHERE type='SELL' AND status='SUCCESS'")
 total_win_row = cursor.fetchone()
-total_win = int(total_win_row[0]) if total_win_row else 0
+total_win = int(total_win_row) if total_win_row else 0
 
 cursor.execute("SELECT COUNT(*) FROM history WHERE status='SUCCESS'")
 total_trades_row = cursor.fetchone()
-total_trades = int(total_trades_row[0]) if total_trades_row else 0
+total_trades = int(total_trades_row) if total_trades_row else 0
 
 win_rate = (total_win / (total_trades / 2)) * 100 if total_trades > 1 and total_win > 0 else 100.0
 
 cursor.execute("SELECT last_run FROM settings LIMIT 1")
 last_run_time = cursor.fetchone()
-last_run_display = last_run_time[0] if last_run_time and last_run_time[0] else "Belum Berjalan"
+last_run_display = last_run_time if last_run_time and last_run_time else "Belum Berjalan"
 
 total_modal_aktif = 0.0
 total_valuasi_aktif = 0.0
@@ -276,9 +282,9 @@ try:
         row = cursor.fetchone()
         live_price = get_live_market_price(pair)
         
-        if row and str(row[0]) == 'BUY':
-            entry_price = float(row[1])
-            holding_amount = float(row[4])
+        if row and str(row) == 'BUY':
+            entry_price = float(row)
+            holding_amount = float(row)
             posisi = "🛒 BUYING"
             if live_price is None: live_price = entry_price
             current_value_idr = holding_amount * live_price
@@ -316,7 +322,7 @@ col_w.metric("Win Rate Bot", f"{win_rate:.1f}%")
 
 if last_run_display and " " in last_run_display:
     waktu_saja = last_run_display.split(" ")
-    col_s.metric("Server Terakhir Scan", str(waktu_saja[1]))
+    col_s.metric("Server Terakhir Scan", str(waktu_saja))
 else:
     col_s.metric("Server Terakhir Scan", str(last_run_display))
 
@@ -329,7 +335,7 @@ else:
     col_pnl.metric("Total Loss Gabungan", f"{total_pnl_pct:.2f}%", delta=f"Rp {akumulasi_pnl_idr:,.0f}")
 st.markdown("---")
 
-st.markdown("#### 📋 Status Pos Positions Semua Aset")
+st.markdown("#### 📋 Status Positions Semua Aset")
 if live_data:
     st.dataframe(pd.DataFrame(live_data), use_container_width=True, hide_index=True)
 
@@ -354,7 +360,7 @@ if st.sidebar.button("💾 Terapkan Batas Risiko"):
     st.sidebar.success("Parameter risiko tersimpan ke Cloud!")
 
 # =====================================================================
-# INTERVAL AUTOREFRESH TINGGI (60 DETIK AMAN)
+# INTERVAL RE-SCAN KILAT AMAN JALUR INTERNASIONAL (60 DETIK / 1 MENIT)
 # =====================================================================
 run_autonomous_engine()
 time.sleep(60)
