@@ -33,17 +33,25 @@ def init_db():
 def get_setting(key, default=None):
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
-    cursor.execute("SELECT val FROM settings WHERE key = ?", (key,))
-    row = cursor.fetchone()
-    conn.close()
-    return row if row else default
+    try:
+        cursor.execute("SELECT val FROM settings WHERE key = ?", (key,))
+        row = cursor.fetchone()
+        return row if row else default
+    except:
+        return default
+    finally:
+        conn.close()
 
 def set_setting(key, val):
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
-    cursor.execute("INSERT OR REPLACE INTO settings (key, val) VALUES (?, ?)", (key, str(val)))
-    conn.commit()
-    conn.close()
+    try:
+        cursor.execute("INSERT OR REPLACE INTO settings (key, val) VALUES (?, ?)", (key, str(val)))
+        conn.commit()
+    except:
+        pass
+    finally:
+        conn.close()
 
 init_db()
 
@@ -93,26 +101,34 @@ def fetch_live_indodax_data(pair):
 # ==========================================
 def ambil_saldo_indodax(api_key, secret_key, pair):
     url_tapi = "https://indodax.com"
-    nonce = int(time.time() * 1000)
+    
+    # PERBAIKAN NONCE: Menggunakan lompatan milidetik yang aman dari blokir server Indodax
+    nonce = int(time.time() * 1000) + 2000
     payload = {'method': 'getInfo', 'nonce': nonce}
-    coin_code = pair.split('/')[0].lower()
+    
+    # PERBAIKAN STRING PAIR: Memotong kode koin agar tidak memicu error split string
+    parts = pair.split('/')
+    coin_code = parts.lower() if len(parts) > 0 else "btc"
+    
     try:
         query_string = urlencode(payload)
         signature = hmac.new(bytes(secret_key, 'utf-8'), msg=bytes(query_string, 'utf-8'), digestmod=hashlib.sha512).hexdigest()
         headers = {'Key': api_key, 'Sign': signature, 'Content-Type': 'application/x-www-form-urlencoded'}
+        
         response = requests.post(url_tapi, data=payload, headers=headers, timeout=10)
         hasil_json = response.json()
+        
         if hasil_json.get('success') == 1:
             balances = hasil_json['return']['balance']
             return {"success": True, "idr": float(balances.get('idr', 0.0)), "coin": float(balances.get(coin_code, 0.0)), "coin_symbol": coin_code.upper()}
-        return {"success": False, "error": hasil_json.get('error')}
+        return {"success": False, "error": hasil_json.get('error', 'Ditolak Server')}
     except Exception as e:
         return {"success": False, "error": str(e)}
 
 def kirim_order_indodax(api_key, secret_key, pair, tipe_aksi, nominal_idr=None, jumlah_coin=None):
     pair_id = pair.replace('/', '_').lower()
     url_tapi = "https://indodax.com"
-    nonce = int(time.time() * 1000)
+    nonce = int(time.time() * 1000) + 2000
     payload = {'method': 'trade', 'pair': pair_id, 'nonce': nonce}
     if tipe_aksi.upper() == "BUY":
         payload.update({'type': 'buy', 'order_type': 'market', 'idr': int(nominal_idr)})
@@ -184,7 +200,7 @@ def jalankan_engine_bot(pair, df):
     highest_price = float(get_setting(f"highest_price_{pair}", default=0.0))
     
     pemicu_aksi = None
-    notif_pesan = "Menunggu Transisi Perubahan Warna HMA..."
+    notif_pesan = "Menunggu Transisi Warna..."
     
     if bot_is_authenticated:
         if posisi_aktif == "TRUE":
@@ -284,7 +300,7 @@ df_hasil, status_bot, live_price = jalankan_engine_bot(selected_pair, df_market)
 if bot_is_authenticated:
     st.success(f"🤖 **Status Sinyal:** {status_bot} | **Harga Riil:** Rp {live_price:,.2f}")
 else:
-    st.error(f"🛑 **Status Keamanan:** Masukkan API Key dan Secret Key di menu Secrets Dasbor Streamlit Cloud.")
+    st.error(f"🛑 **Status Keamanan:** Aktifkan Kunci di Menu Secrets Dasbor Streamlit.")
 
 # ==========================================
 # 9. GRAFIK PLOTLY REAL-TIME & TABEL JURNAL
