@@ -46,8 +46,7 @@ API_SECRET = st.sidebar.text_input("Indodax Secret Key", value="INTEGRATED_SECUR
 DB_FILE = 'trading_bot.db'
 
 def get_db_connection():
-    # Menambahkan timeout untuk mencegah DatabaseError akibat write-lock
-    return sqlite3.connect(DB_FILE, timeout=10)
+    return sqlite3.connect(DB_FILE, timeout=15)
 
 def init_db():
     with get_db_connection() as conn:
@@ -84,30 +83,44 @@ def init_db():
 init_db()
 
 def get_positions():
-    with get_db_connection() as conn:
-        query = "SELECT pair as 'Aset', status as 'Status', buy_price as 'Harga Beli', amount as 'Jumlah', last_update as 'Waktu Update' FROM positions"
-        df = pd.read_sql_query(query, conn)
-    return df
+    try:
+        with get_db_connection() as conn:
+            # Perbaikan sintaks alias SQL menggunakan standard double quotes
+            query = 'SELECT pair as "Aset", status as "Status", buy_price as "Harga Beli", amount as "Jumlah", last_update as "Waktu Update" FROM positions'
+            df = pd.read_sql_query(query, conn)
+        return df
+    except Exception as e:
+        return pd.DataFrame(columns=["Aset", "Status", "Harga Beli", "Jumlah", "Waktu Update"])
 
 def get_logs():
-    with get_db_connection() as conn:
-        query = "SELECT timestamp as 'Waktu', pair as 'Aset', action as 'Aksi', message as 'Detail' FROM activity_logs ORDER BY id DESC LIMIT 10"
-        df = pd.read_sql_query(query, conn)
-    return df
+    try:
+        with get_db_connection() as conn:
+            # Perbaikan sintaks alias SQL menggunakan standard double quotes untuk menghindari Pandas Error
+            query = 'SELECT timestamp as "Waktu", pair as "Aset", action as "Aksi", message as "Detail" FROM activity_logs ORDER BY id DESC LIMIT 10'
+            df = pd.read_sql_query(query, conn)
+        return df
+    except Exception as e:
+        return pd.DataFrame(columns=["Waktu", "Aset", "Aksi", "Detail"])
 
 def add_log(pair, action, message):
-    with get_db_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute("INSERT INTO activity_logs (timestamp, pair, action, message) VALUES (?, ?, ?, ?)",
-                       (datetime.now().strftime('%H:%M:%S'), pair, action, message))
-        conn.commit()
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("INSERT INTO activity_logs (timestamp, pair, action, message) VALUES (?, ?, ?, ?)",
+                           (datetime.now().strftime('%H:%M:%S'), pair, action, message))
+            conn.commit()
+    except Exception as e:
+        pass
 
 def update_position(pair, status, buy_price, amount):
-    with get_db_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute("UPDATE positions SET status=?, buy_price=?, amount=?, last_update=? WHERE pair=?",
-                       (status, buy_price, amount, datetime.now().strftime('%Y-%m-%d %H:%M:%S'), pair))
-        conn.commit()
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("UPDATE positions SET status=?, buy_price=?, amount=?, last_update=? WHERE pair=?",
+                           (status, buy_price, amount, datetime.now().strftime('%Y-%m-%d %H:%M:%S'), pair))
+            conn.commit()
+    except Exception as e:
+        pass
 
 # ==============================================================================
 # 3. KONEKSI DATA CHART BINANCE GLOBAL & OPTIMASI LOGIKA HMA-20
@@ -126,7 +139,6 @@ def calculate_hma(series, period):
     return hma
 
 def fetch_binance_4h_signals(pair):
-    # Bersihkan penulisan dan petakan koin Indodax ke pasar Binance USDT
     clean_pair = pair.replace('/IDR', '')
     binance_symbol = f"{clean_pair}USDT"
     url = f"https://binance.com{binance_symbol}&interval=4h&limit=50"
@@ -137,10 +149,8 @@ def fetch_binance_4h_signals(pair):
         df['close'] = df['close'].astype(float)
         df['volume'] = df['volume'].astype(float)
         
-        # Hitung HMA-20
         df['hma_20'] = calculate_hma(df['close'], 20)
         
-        # OPTIMASI SINYAL: Konfirmasi matang pada Bar [-2] (Mencegah Repainting)
         closed_price = df['close'].iloc[-2]
         hma_last_fixed = df['hma_20'].iloc[-2]
         hma_prev_fixed = df['hma_20'].iloc[-3]
@@ -193,29 +203,30 @@ st.markdown("---")
 # Eksekusi Logika Sinyal & Sistem Rem Saldo Otomatis
 df_positions = get_positions()
 
-for idx, row in df_positions.iterrows():
-    pair = row['Aset']
-    current_status = row['Status']
-    
-    signal, target_price, vol_24h = fetch_binance_4h_signals(pair)
-    
-    if vol_24h < min_volume_24h and signal != "ERROR":
-        continue
+if not df_positions.empty and "Aset" in df_positions.columns:
+    for idx, row in df_positions.iterrows():
+        pair = row['Aset']
+        current_status = row['Status']
         
-    if current_status == 'WAITING_BUY' and signal == 'BUY':
-        if saldo_idr_dompet >= modal_per_trade:
-            amount_to_buy = modal_per_trade / target_price
-            saldo_idr_dompet -= modal_per_trade
-            update_position(pair, 'HOLDING_SELL', target_price, amount_to_buy)
-            add_log(pair, 'BUY', f"Membeli menggunakan modal Rp{modal_per_trade:,.0f} pada harga Rp{target_price:,.2f}")
-        else:
-            add_log(pair, 'SKIP', "Gagal BUY: Saldo IDR tidak mencukupi modal per transaksi!")
+        signal, target_price, vol_24h = fetch_binance_4h_signals(pair)
+        
+        if vol_24h < min_volume_24h and signal != "ERROR":
+            continue
             
-    elif current_status == 'HOLDING_SELL' and signal == 'SELL':
-        payout = row['Jumlah'] * target_price
-        saldo_idr_dompet += payout
-        update_position(pair, 'WAITING_BUY', 0.0, 0.0)
-        add_log(pair, 'SELL', f"Menjual seluruh aset ekivalen Rp{payout:,.0f} pada harga Rp{target_price:,.2f}")
+        if current_status == 'WAITING_BUY' and signal == 'BUY':
+            if saldo_idr_dompet >= modal_per_trade:
+                amount_to_buy = modal_per_trade / target_price
+                saldo_idr_dompet -= modal_per_trade
+                update_position(pair, 'HOLDING_SELL', target_price, amount_to_buy)
+                add_log(pair, 'BUY', f"Membeli menggunakan modal Rp{modal_per_trade:,.0f} pada harga Rp{target_price:,.2f}")
+            else:
+                add_log(pair, 'SKIP', "Gagal BUY: Saldo IDR tidak mencukupi modal per transaksi!")
+                
+        elif current_status == 'HOLDING_SELL' and signal == 'SELL':
+            payout = row['Jumlah'] * target_price
+            saldo_idr_dompet += payout
+            update_position(pair, 'WAITING_BUY', 0.0, 0.0)
+            add_log(pair, 'SELL', f"Menjual seluruh aset ekivalen Rp{payout:,.0f} pada harga Rp{target_price:,.2f}")
 
 # Menampilkan data tabel secara aman di HP
 st.subheader("📌 Status Posisi 5 Aset Permanen")
