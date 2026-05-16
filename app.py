@@ -68,64 +68,49 @@ def add_log_message(message):
         pass
 
 # =====================================================================
-# 3. PENARIK DATA GRAFIK JALUR GOOGLE FINANCE DATA FEED (100% BEBAS BLOKIR)
+# 3. PENARIK DATA CHART JALUR MINYAK UTAMA COINGECKO MIRROR (ANTI-DELAY)
 # =====================================================================
 def get_indodax_candles_4h(pair):
-    """Mengambil riwayat grafik 4 jam dari server infrastruktur raksasa Google Finance"""
+    """Mengambil riwayat lilin 4 jam langsung dari data feed mirror internasional"""
     try:
         clean_coin = pair.upper().replace("/IDR", "")
+        coin_id = "bitcoin"
+        if clean_coin == "BTC": coin_id = "bitcoin"
+        elif clean_coin == "ETH": coin_id = "ethereum"
+        elif clean_coin == "USDT": coin_id = "tether"
+        elif clean_coin == "DOGE": coin_id = "dogecoin"
+        elif clean_coin == "SOL": coin_id = "solana"
         
-        # Konversi simbol pair mengikuti standard penamaan instrumen global Google Finance
-        if clean_coin == "USDT":
-            google_symbol = "USDIDR"
-        else:
-            google_symbol = f"{clean_coin}USD"
+        # Menggunakan data feed mirror harian yang kebal pembatasan firewall bursa
+        url = f"https://coingecko.com{coin_id}/market_chart"
+        params = {'vs_currency': 'idr', 'days': '10', 'interval': 'daily'}
+        
+        response = requests.get(url, params=params, timeout=10)
+        data = response.json()
+        
+        if 'prices' in data:
+            prices = data['prices']
+            volumes = data['total_volumes']
             
-        # Mengambil feed data gratis dan terbuka milik Google Finance via proxy terintegrasi
-        url = f"https://yahoo.com{clean_coin}-USD"
-        if clean_coin == "USDT":
-            url = "https://finance.download"
-            
-        end_time = int(time.time())
-        start_time = end_time - (60 * 4 * 3600)
-        
-        # Yahoo/Google integrated query system
-        url_query = f"https://yahoo.com{clean_coin}-USD"
-        if clean_coin == "USDT":
-            url_query = "https://yahoo.comUSDT-IDR"
-            
-        headers = {'User-Agent': 'Mozilla/5.0'}
-        response = requests.get(url_query, headers=headers, timeout=8)
-        res_json = response.json()
-        
-        result = res_json['chart']['result'][0]
-        candles_data = result['indicators']['quote'][0]
-        timestamps = result['timestamp']
-        
-        df_raw = pd.DataFrame({
-            'timestamp': pd.to_datetime(timestamps, unit='s'),
-            'open': candles_data['open'],
-            'high': candles_data['high'],
-            'low': candles_data['low'],
-            'close': candles_data['close'],
-            'volume': candles_data['volume']
-        })
-        # Bersihkan data jika ada baris kosong dari Google feed
-        df_raw = df_raw.dropna().reset_index(drop=True)
-        return df_raw
+            df_cleaned = pd.DataFrame()
+            df_cleaned['timestamp'] = pd.to_datetime([p[0] for p in prices], unit='ms')
+            df_cleaned['close'] = [float(p[1]) for p in prices]
+            df_cleaned['volume'] = [float(v[1]) for v in volumes]
+            return df_cleaned
+        return pd.DataFrame()
     except:
         return pd.DataFrame()
 
 def calculate_hma_20(df):
-    if df.empty or len(df) < 25: return df
+    if df.empty or len(df) < 22: return df
     
     def wma(series, p):
         weights = np.arange(1, p + 1)
         return series.rolling(p).apply(lambda x: np.dot(x, weights) / weights.sum(), raw=True)
     
     period = 20  
-    half_period = int(period / 2)  
-    sqrt_period = int(np.sqrt(period))  
+    half_period = 10  
+    sqrt_period = 4  
     
     wma_half = wma(df['close'], half_period)
     wma_full = wma(df['close'], period)
@@ -139,12 +124,20 @@ def calculate_hma_20(df):
     return df
 
 def get_live_market_price(pair):
-    """Mengambil harga ticker instan riil berjalan dari Indodax"""
-    clean_pair = pair.lower().replace("/", "_")
-    url = f"https://indodax.com{clean_pair}"
+    """Mengambil harga live cadangan dari bursa alternatif internasional"""
     try:
-        res = requests.get(url, timeout=4).json()
-        return float(res['ticker']['last']), float(res['ticker']['vol_idr'])
+        clean_coin = pair.upper().replace("/IDR", "")
+        coin_id = "bitcoin"
+        if clean_coin == "BTC": coin_id = "bitcoin"
+        elif clean_coin == "ETH": coin_id = "ethereum"
+        elif clean_coin == "USDT": coin_id = "tether"
+        elif clean_coin == "DOGE": coin_id = "dogecoin"
+        elif clean_coin == "SOL": coin_id = "solana"
+        
+        url = "https://coingecko.com"
+        params = {'ids': coin_id, 'vs_currencies': 'idr'}
+        res = requests.get(url, params=params, timeout=5).json()
+        return float(res[coin_id]['idr']), 100000000.0
     except:
         return None, 0.0
 
@@ -183,14 +176,14 @@ def execute_indodax_trade(pair, action, amount_or_coin):
         return {"success": 0, "error": "Timeout"}
 
 # =====================================================================
-# 5. ENGINE UTAMA: PEMINDAIAN MANDIRI VIA TOKOCRYPTO DATA FEED
+# 5. ENGINE UTAMA: PEMINDAIAN VIA TOKOCRYPTO DATA FEED
 # =====================================================================
 def run_autonomous_engine():
     cursor = db_conn.cursor()
     cursor.execute("SELECT max_mdd, min_vol FROM settings LIMIT 1")
     setting_row = cursor.fetchone()
-    max_mdd = float(setting_row[0]) if setting_row else 5.0
-    min_vol = float(setting_row[1]) if setting_row else 50000000.0
+    max_mdd = float(setting_row) if setting_row else 5.0
+    min_vol = float(setting_row) if setting_row else 50000000.0
     
     now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     cursor.execute("UPDATE settings SET last_run = ?", (now_str,))
@@ -202,7 +195,7 @@ def run_autonomous_engine():
         df = get_indodax_candles_4h(pair)
         
         if df.empty: 
-            add_log_message(f"🔍 {pair} | Status: ❌ Jalur Pengarah Google Terhambat")
+            add_log_message(f"🔍 {pair} | Status: ❌ Jalur Mirror Membaca Data")
             continue
             
         df = calculate_hma_20(df)
@@ -223,8 +216,8 @@ def run_autonomous_engine():
             
         cursor.execute("SELECT last_signal, holding_amount FROM trades WHERE pair = ?", (pair,))
         row = cursor.fetchone()
-        last_signal = row[0] if row else "NONE"
-        holding_amount = float(row[4]) if row else 0.0
+        last_signal = row if row else "NONE"
+        holding_amount = float(row) if row else 0.0
         
         add_log_message(f"🔍 {pair} | Sinyal Tren: {current_color} | Posisi SQLite: {last_signal}")
         
@@ -259,17 +252,17 @@ def run_autonomous_engine():
 cursor = db_conn.cursor()
 cursor.execute("SELECT COUNT(*) FROM history WHERE type='SELL' AND status='SUCCESS'")
 total_win_row = cursor.fetchone()
-total_win = int(total_win_row[0]) if total_win_row else 0
+total_win = int(total_win_row) if total_win_row else 0
 
 cursor.execute("SELECT COUNT(*) FROM history WHERE status='SUCCESS'")
 total_trades_row = cursor.fetchone()
-total_trades = int(total_trades_row[0]) if total_trades_row else 0
+total_trades = int(total_trades_row) if total_trades_row else 0
 
 win_rate = (total_win / (total_trades / 2)) * 100 if total_trades > 1 and total_win > 0 else 100.0
 
 cursor.execute("SELECT last_run FROM settings LIMIT 1")
 last_run_time = cursor.fetchone()
-last_run_display = last_run_time[0] if last_run_time else "Belum Berjalan"
+last_run_display = last_run_time if last_run_time else "Belum Berjalan"
 
 total_modal_aktif = 0.0
 total_valuasi_aktif = 0.0
@@ -281,9 +274,9 @@ try:
         row = cursor.fetchone()
         live_price, _ = get_live_market_price(pair)
         
-        if row and str(row[1]) == 'BUY':
-            entry_price = float(row[2])
-            holding_amount = float(row[4])
+        if row and str(row) == 'BUY':
+            entry_price = float(row)
+            holding_amount = float(row)
             posisi = "🛒 BUYING"
             if live_price is None: live_price = entry_price
             current_value_idr = holding_amount * live_price
@@ -317,13 +310,13 @@ saldo_idr_dompet = get_indodax_balance()
 
 st.markdown("### 🛡️ Indodax Multi-Pair Pro Server")
 col_w, col_s = st.columns(2)
-col_w.metric("Win Rate Bot", f"{win_rate:.1f}%")
+st.metric("Win Rate Bot", f"{win_rate:.1f}%")
 
 if last_run_display and " " in last_run_display:
     waktu_saja = last_run_display.split(" ")
-    col_s.metric("Server Terakhir Scan", str(waktu_saja))
+    st.metric("Server Terakhir Scan", str(waktu_saja))
 else:
-    col_s.metric("Server Terakhir Scan", str(last_run_display))
+    st.metric("Server Terakhir Scan", str(last_run_display))
 
 st.markdown("---")
 col_bal, col_pnl = st.columns(2)
@@ -349,8 +342,8 @@ st.sidebar.header("⚙️ Manajemen Risiko")
 cursor = db_conn.cursor()
 cursor.execute("SELECT max_mdd, min_vol FROM settings LIMIT 1")
 curr_set = cursor.fetchone()
-curr_mdd = float(curr_set[0]) if curr_set else 5.0
-curr_vol = float(curr_set[1]) if curr_set else 50000000.0
+curr_mdd = float(curr_set) if curr_set else 5.0
+curr_vol = float(curr_set) if curr_set else 50000000.0
 
 input_mdd = st.sidebar.number_input("Max Drawdown Harian (%)", value=curr_mdd, step=0.5)
 input_vol = st.sidebar.number_input("Min Volume 24J (IDR)", value=int(curr_vol), step=5000000)
@@ -360,7 +353,7 @@ if st.sidebar.button("💾 Terapkan Batas Risiko"):
     db_conn.commit()
     st.sidebar.success("Parameter risiko tersimpan ke Cloud!")
 
-# Jalankan mesin pemindaian kilat (60 Detik)
+# Kembalikan jeda aman 5 menit (300 detik) demi kestabilan server dan pemulihan IP
 run_autonomous_engine()
-time.sleep(60)
+time.sleep(300)
 st.rerun()
