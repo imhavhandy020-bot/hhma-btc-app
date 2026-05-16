@@ -75,18 +75,16 @@ def get_indodax_candles_4h(pair):
     try:
         clean_coin = pair.upper().replace("/IDR", "")
         
-        # Konversi nama pasangan pasar koin ke standar Tokocrypto
         if clean_coin == "USDT":
             tokocrypto_symbol = "USDTIDR"
         else:
             tokocrypto_symbol = f"{clean_coin}USDT"
             
-        # Menggunakan endpoint klines resmi Tokocrypto yang super longgar dan bebas limit
         url = "https://tokocrypto.com"
         params = {
             'symbol': tokocrypto_symbol,
-            'interval': '4h',  # Kunci Mati Jangka Waktu 4 Jam (4h)
-            'limit': 50        # Mengambil 50 bar terakhir untuk perhitungan HMA-20
+            'interval': '4h',  
+            'limit': 50        
         }
         
         response = requests.get(url, params=params, timeout=8)
@@ -96,13 +94,12 @@ def get_indodax_candles_4h(pair):
             data = res_json['data']
             if len(data) > 20:
                 df_raw = pd.DataFrame(data)
-                # Format Tokocrypto klines: 0=Time, 1=Open, 2=High, 3=Low, 4=Close, 5=Volume
                 df_cleaned = pd.DataFrame({
                     'timestamp': pd.to_datetime(df_raw[0], unit='ms'),
                     'open': df_raw[1].astype(float),
                     'high': df_raw[2].astype(float),
                     'low': df_raw[3].astype(float),
-                    'close': df_raw[4].astype(float),  # Harga penutupan penentu rumus HMA-20
+                    'close': df_raw[4].astype(float),  
                     'volume': df_raw[5].astype(float)
                 })
                 return df_cleaned
@@ -118,8 +115,8 @@ def calculate_hma_20(df):
         return series.rolling(p).apply(lambda x: np.dot(x, weights) / weights.sum(), raw=True)
     
     period = 20  
-    half_period = int(period / 2)  # 10
-    sqrt_period = int(np.sqrt(period))  # 4
+    half_period = int(period / 2)  
+    sqrt_period = int(np.sqrt(period))  
     
     wma_half = wma(df['close'], half_period)
     wma_full = wma(df['close'], period)
@@ -183,7 +180,8 @@ def run_autonomous_engine():
     cursor = db_conn.cursor()
     cursor.execute("SELECT max_mdd, min_vol FROM settings LIMIT 1")
     setting_row = cursor.fetchone()
-    max_mdd, min_vol = setting_row[:2] if setting_row else (5.0, 50000000)
+    max_mdd = float(setting_row[0]) if setting_row else 5.0
+    min_vol = float(setting_row[1]) if setting_row else 50000000.0
     
     now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     cursor.execute("UPDATE settings SET last_run = ?", (now_str,))
@@ -192,12 +190,10 @@ def run_autonomous_engine():
     saldo_saat_ini = get_indodax_balance()
     
     for pair in LIST_PAIRS:
-        # Tarik data candlestick 4 jam instan dari Tokocrypto
         df = get_indodax_candles_4h(pair)
         
         if df.empty: 
-            log_summary = f"🔍 {pair} | Status: ❌ Jaringan Tokocrypto Overload"
-            add_log_message(log_summary)
+            add_log_message(f"🔍 {pair} | Status: ❌ Jaringan Tokocrypto Overload")
             continue
             
         df = calculate_hma_20(df)
@@ -218,9 +214,9 @@ def run_autonomous_engine():
             
         cursor.execute("SELECT last_signal, holding_amount FROM trades WHERE pair = ?", (pair,))
         row = cursor.fetchone()
-        last_signal, holding_amount = row if row else ("NONE", 0.0)
+        last_signal = row[0] if row else "NONE"
+        holding_amount = float(row[1]) if row else 0.0
         
-        # LAPORAN SUKSES INSTAN: Menampilkan arah tren sinyal asli koin berjalan detik ini di HP Anda
         add_log_message(f"🔍 {pair} | Sinyal Tren: {current_color} | Posisi SQLite: {last_signal}")
         
         # BUY
@@ -254,17 +250,19 @@ def run_autonomous_engine():
 cursor = db_conn.cursor()
 cursor.execute("SELECT COUNT(*) FROM history WHERE type='SELL' AND status='SUCCESS'")
 total_win_row = cursor.fetchone()
-total_win = int(total_win_row) if total_win_row else 0
+# PERBAIKAN SEMENTARA TYPEERROR: Mengekstrak index tuple [0] sebelum dikonversi
+total_win = int(total_win_row[0]) if total_win_row else 0
 
 cursor.execute("SELECT COUNT(*) FROM history WHERE status='SUCCESS'")
 total_trades_row = cursor.fetchone()
-total_trades = int(total_trades_row) if total_trades_row else 0
+# PERBAIKAN SEMENTARA TYPEERROR: Mengekstrak index tuple [0] sebelum dikonversi
+total_trades = int(total_trades_row[0]) if total_trades_row else 0
 
 win_rate = (total_win / (total_trades / 2)) * 100 if total_trades > 1 and total_win > 0 else 100.0
 
 cursor.execute("SELECT last_run FROM settings LIMIT 1")
 last_run_time = cursor.fetchone()
-last_run_display = last_run_time if last_run_time else "Belum Berjalan"
+last_run_display = last_run_time[0] if last_run_time else "Belum Berjalan"
 
 total_modal_aktif = 0.0
 total_valuasi_aktif = 0.0
@@ -276,9 +274,9 @@ try:
         row = cursor.fetchone()
         live_price, _ = get_live_market_price(pair)
         
-        if row and str(row) == 'BUY':
-            entry_price = float(row)
-            holding_amount = float(row)
+        if row and str(row[0]) == 'BUY':
+            entry_price = float(row[1])
+            holding_amount = float(row[2])
             posisi = "🛒 BUYING"
             if live_price is None: live_price = entry_price
             current_value_idr = holding_amount * live_price
@@ -312,13 +310,13 @@ saldo_idr_dompet = get_indodax_balance()
 
 st.markdown("### 🛡️ Indodax Multi-Pair Pro Server")
 col_w, col_s = st.columns(2)
-col_w.metric("Win Rate Bot", f"{win_rate:.1f}%")
+st.metric("Win Rate Bot", f"{win_rate:.1f}%")
 
 if last_run_display and " " in last_run_display:
     waktu_saja = last_run_display.split(" ")
-    col_s.metric("Server Terakhir Scan", str(waktu_saja))
+    st.metric("Server Terakhir Scan", str(waktu_saja[1]))
 else:
-    col_s.metric("Server Terakhir Scan", str(last_run_display))
+    st.metric("Server Terakhir Scan", str(last_run_display))
 
 st.markdown("---")
 col_bal, col_pnl = st.columns(2)
@@ -344,8 +342,8 @@ st.sidebar.header("⚙️ Manajemen Risiko")
 cursor = db_conn.cursor()
 cursor.execute("SELECT max_mdd, min_vol FROM settings LIMIT 1")
 curr_set = cursor.fetchone()
-curr_mdd = float(curr_set) if curr_set else 5.0
-curr_vol = float(curr_set) if curr_set else 50000000
+curr_mdd = float(curr_set[0]) if curr_set else 5.0
+curr_vol = float(curr_set[1]) if curr_set else 50000000.0
 
 input_mdd = st.sidebar.number_input("Max Drawdown Harian (%)", value=curr_mdd, step=0.5)
 input_vol = st.sidebar.number_input("Min Volume 24J (IDR)", value=int(curr_vol), step=5000000)
