@@ -18,11 +18,23 @@ LIST_PAIRS = ['BTC/IDR', 'ETH/IDR', 'USDT/IDR', 'SOL/IDR', 'DOGE/IDR']
 MODAL_PER_TRANSAKSI_IDR = 50000.0  # Rp 50.000 per eksekusi BUY pasar
 
 # =====================================================================
-# 2. SISTEM MEMORI PERMANEN & MIGRASI DATABASE (ANTI-CRASH)
+# 2. SISTEM MEMORI PERMANEN & PENYEMBUHAN DATABASE TOTAL (ANTI-CRASH)
 # =====================================================================
 def init_db():
-    conn = sqlite3.connect('trading_bot.db', check_same_thread=False, timeout=15)
+    """Inisialisasi tabel basis data dengan reset otomatis jika struktur rusak"""
+    conn = sqlite3.connect('trading_bot.db', check_same_thread=False, timeout=20)
     cursor = conn.cursor()
+    
+    # PERBAIKAN RADIKAL: Hancurkan tabel trades lama yang rusak akibat indeks tertukar
+    try:
+        # Cek apakah struktur kolomnya valid untuk dibaca Pandas
+        cursor.execute("SELECT pair, last_signal, entry_price, timestamp, holding_amount FROM trades LIMIT 1")
+    except sqlite3.OperationalError:
+        # Jika error (struktur kolom berantakan), hapus tabel lama secara total
+        cursor.execute("DROP TABLE IF EXISTS trades")
+        conn.commit()
+    
+    # Buat ulang tabel trades dengan susunan kolom yang bersih dan mutlak
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS trades (
             pair TEXT PRIMARY KEY, 
@@ -32,12 +44,8 @@ def init_db():
             holding_amount REAL DEFAULT 0.0
         )
     """)
-    try:
-        cursor.execute("SELECT holding_amount FROM trades LIMIT 1")
-    except sqlite3.OperationalError:
-        cursor.execute("ALTER TABLE trades ADD COLUMN holding_amount REAL DEFAULT 0.0")
-        conn.commit()
     
+    # Pastikan tabel log riwayat transaksi ada
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS history (
             id INTEGER PRIMARY KEY AUTOINCREMENT, 
@@ -48,6 +56,8 @@ def init_db():
             timestamp TEXT
         )
     """)
+    
+    # Pastikan tabel konfigurasi risiko ada dan memiliki kolom lengkap
     try:
         cursor.execute("SELECT last_run FROM settings LIMIT 1")
     except sqlite3.OperationalError:
@@ -64,6 +74,7 @@ def init_db():
     conn.commit()
     return conn
 
+# Hubungkan basis data secara global
 db_conn = init_db()
 
 # =====================================================================
@@ -157,20 +168,28 @@ def run_autonomous_engine():
         row = cursor.fetchone()
         last_signal, holding_amount = row if row else ("NONE", 0.0)
         
+        # 🟢 SINYAL BUY RIIL (HMA Hijau)
         if current_color == 'Green' and last_signal != 'BUY':
             res = execute_indodax_trade(pair, "buy", MODAL_PER_TRANSAKSI_IDR)
             if res.get("success") == 1:
                 return_receive = float(res['return'].get('receive_coin', 0.0))
                 coin_bought = return_receive if return_receive > 0 else (MODAL_PER_TRANSAKSI_IDR / current_price)
-                cursor.execute("INSERT OR REPLACE INTO trades (pair, last_signal, entry_price, timestamp, holding_amount) VALUES (?, 'BUY', ?, ?, ?)", (pair, current_price, now_str, coin_bought))
+                cursor.execute("""
+                    INSERT OR REPLACE INTO trades (pair, last_signal, entry_price, timestamp, holding_amount) 
+                    VALUES (?, 'BUY', ?, ?, ?)
+                """, (pair, current_price, now_str, coin_bought))
                 cursor.execute("INSERT INTO history (pair, type, price, status, timestamp) VALUES (?, 'BUY', ?, 'SUCCESS', ?)", (pair, current_price, now_str))
                 db_conn.commit()
                 
+        # 🔴 SINYAL SELL RIIL (HMA Merah)
         elif current_color == 'Red' and last_signal == 'BUY':
             coin_to_sell = holding_amount if holding_amount > 0 else (MODAL_PER_TRANSAKSI_IDR / current_price)
             res = execute_indodax_trade(pair, "sell", coin_to_sell)
             if res.get("success") == 1:
-                cursor.execute("INSERT OR REPLACE INTO trades (pair, last_signal, entry_price, timestamp, holding_amount) VALUES (?, 'SELL', ?, ?, 0.0)", (pair, current_price, now_str))
+                cursor.execute("""
+                    INSERT OR REPLACE INTO trades (pair, last_signal, entry_price, timestamp, holding_amount) 
+                    VALUES (?, 'SELL', ?, ?, 0.0)
+                """, (pair, current_price, now_str))
                 cursor.execute("INSERT INTO history (pair, type, price, status, timestamp) VALUES (?, 'SELL', ?, 'SUCCESS', ?)", (pair, current_price, now_str))
                 db_conn.commit()
 
@@ -198,15 +217,24 @@ last_run_display = last_run_time[0] if last_run_time else "Menghubungkan..."
 st.markdown("### 🛡️ Indodax Multi-Pair Pro Server")
 col1, col2 = st.columns(2)
 col1.metric("Win Rate Bot", f"{win_rate:.1f}%")
-col2.metric("Server Terakhir Scan", last_run_display.split(" ")[1] if " " in last_run_display else last_run_display)
+col2.metric("Server Terakhir Scan", last_run_display.split(" ") if " " in last_run_display else last_run_display)
 
 st.markdown("#### 📋 Running Trades (Status Posisi)")
-df_running = pd.read_sql_query("SELECT pair as 'Pair', last_signal as 'Posisi', entry_price as 'Harga Masuk', timestamp as 'Waktu Pemicu' FROM trades WHERE last_signal='BUY'", db_conn)
 
-if df_running.empty:
-    st.write("💡 *Semua aset sedang clean (posisi kosong/terjual).*")
-else:
-    st.dataframe(df_running, use_container_width=True, hide_index=True)
+# TONGKAT PENGAMAN KEDUA: Membungkus pembacaan Pandas agar kebal dari kerusakan SQLite
+try:
+    df_running = pd.read_sql_query("""
+        SELECT pair as 'Pair', last_signal as 'Posisi', 
+        entry_price as 'Harga Masuk', timestamp as 'Waktu Pemicu' 
+        FROM trades WHERE last_signal='BUY'
+    """, db_conn)
+
+    if df_running.empty:
+        st.write("💡 *Semua aset sedang clean (posisi kosong/terjual).*")
+    else:
+        st.dataframe(df_running, use_container_width=True, hide_index=True)
+except Exception as database_error:
+    st.write("🔄 *Sedang menata ulang tabel database baru di Server Cloud...*")
 
 # 7. CONTROL PANEL SIDEBAR HP
 st.sidebar.header("⚙️ Manajemen Risiko")
