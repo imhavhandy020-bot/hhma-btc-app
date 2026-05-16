@@ -11,14 +11,15 @@ def calculate_wma(series, period):
     return series.rolling(period).apply(lambda x: np.dot(x, weights) / weights.sum(), raw=True)
 
 def calculate_hma(series, period):
-    half_period = int(period / 2) if period > 1 else 1
-    sqrt_period = int(np.sqrt(period)) if period > 1 else 1
+    period = int(period) if int(period) > 1 else 9
+    half_period = int(period / 2)
+    sqrt_period = int(np.sqrt(period))
     wma_half = calculate_wma(series, half_period)
     wma_full = calculate_wma(series, period)
     raw_hma = (2 * wma_half) - wma_full
     return calculate_wma(raw_hma, sqrt_period)
 
-# --- 1. DEKLARASI STATE AWAL PERMANEN (ANTI-RESET) ---
+# --- 1. INISIALISASI SESSION STATE (AMANKAN NILAI AWAL) ---
 if 'api_key' not in st.session_state: st.session_state['api_key'] = ""
 if 'secret_key' not in st.session_state: st.session_state['secret_key'] = ""
 if 'symbol' not in st.session_state: st.session_state['symbol'] = "BTC/IDR"
@@ -29,17 +30,17 @@ if 'trade_amount' not in st.session_state: st.session_state['trade_amount'] = 50
 if 'stop_loss_pct' not in st.session_state: st.session_state['stop_loss_pct'] = 2.0
 if 'target_profit_pct' not in st.session_state: st.session_state['target_profit_pct'] = 4.0
 if 'trailing_step_pct' not in st.session_state: st.session_state['trailing_step_pct'] = 1.0
-if 'fake_signal_filter' not in st.session_state: st.session_state['fake_signal_filter'] = 0.05
-if 'min_volume_idr' not in st.session_state: st.session_state['min_volume_idr'] = 50000000.0
+if 'fake_signal_filter' not in st.session_state: st.session_state['fake_signal_filter'] = 0.050
+if 'min_volume_idr' not in st.session_state: st.session_state['min_volume_idr'] = 50000000
 if 'refresh_interval' not in st.session_state: st.session_state['refresh_interval'] = 30
-if 'last_buy_price' not in st.session_state: st.session_state['last_buy_price'] = 0.0
+if 'last_buy_price' not in st.session_state: st.session_state['last_buy_price'] = "0"
 if 'highest_price_since_buy' not in st.session_state: st.session_state['highest_price_since_buy'] = 0.0
 
 # --- CONFIG APLIKASI ---
 st.set_page_config(page_title="Indodax Ultra-Pro Bot", layout="wide")
 st.title("🛡️ Indodax Pro Bot (Anti-Fake Signal, Trailing Profit & Volume Guard)")
 
-# --- 2. PANEL SIDEBAR PENGATURAN PERMANEN ---
+# --- 2. PANEL SIDEBAR ANTI-CRASH (MENGGUNAKAN SLIDER & AMAN INPUT) ---
 st.sidebar.header("🔑 Kredensial Indodax")
 st.sidebar.text_input("API Key", type="password", key="api_key")
 st.sidebar.text_input("Secret Key", type="password", key="secret_key")
@@ -47,27 +48,31 @@ st.sidebar.text_input("Secret Key", type="password", key="secret_key")
 st.sidebar.header("⚙️ Parameter Strategi")
 st.sidebar.text_input("Simbol Trading", key="symbol")
 st.sidebar.selectbox("Timeframe", ["1 Menit", "5 Menit", "15 Menit", "1 Jam", "1 Hari"], key="timeframe_label")
-st.sidebar.number_input("HHMA Cepat", step=1, key="fast_period")
-st.sidebar.number_input("HHMA Lambat (HHMA20)", step=1, key="slow_period")
-st.sidebar.number_input("Jumlah Beli (IDR)", step=10000, key="trade_amount")
+
+# Menggunakan Slider agar input angka TIDAK BISA KOSONG (Bebas Eror Teks Kosong '')
+st.sidebar.slider("HHMA Cepat", min_value=2, max_value=50, step=1, key="fast_period")
+st.sidebar.slider("HHMA Lambat (HHMA20)", min_value=3, max_value=100, step=10, key="slow_period")
+st.sidebar.slider("Jumlah Beli (IDR)", min_value=10000, max_value=5000000, step=10000, key="trade_amount")
 
 st.sidebar.header("🛡️ Proteksi Risiko & Sinyal Palsu")
-st.sidebar.number_input("Filter Sinyal Palsu (%)", key="fake_signal_filter", format="%.3f")
-st.sidebar.number_input("Minimal Volume Harian (IDR)", step=5000000.0, key="min_volume_idr", format="%.1f")
-st.sidebar.number_input("Batas Hard Stop Loss (%)", step=0.5, key="stop_loss_pct")
-st.sidebar.number_input("Target Mulai Trailing Profit (%)", step=0.5, key="target_profit_pct")
-st.sidebar.number_input("Jarak Trailing Koridor (%)", step=0.5, key="trailing_step_pct")
-st.sidebar.number_input("Harga Beli Terakhir (IDR)", step=100.0, key="last_buy_price")
+st.sidebar.slider("Filter Sinyal Palsu (%)", min_value=0.000, max_value=1.000, step=0.005, format="%.3f", key="fake_signal_filter")
+st.sidebar.slider("Batas Hard Stop Loss (%)", min_value=0.5, max_value=20.0, step=0.5, key="stop_loss_pct")
+st.sidebar.slider("Target Mulai Trailing Profit (%)", min_value=1.0, max_value=50.0, step=0.5, key="target_profit_pct")
+st.sidebar.slider("Jarak Trailing Koridor (%)", min_value=0.2, max_value=10.0, step=0.2, key="trailing_step_pct")
+
+# Untuk input manual teks harga beli terakhir, dikonversi dengan failsafe aman
+st.sidebar.text_input("Harga Beli Terakhir (IDR)", key="last_buy_price", help="Gunakan angka tanpa koma/titik. Isi 0 jika belum beli.")
 
 st.sidebar.header("⏱️ Sistem")
 st.sidebar.slider("Jeda Cek Pasar (Detik)", min_value=10, max_value=300, step=10, key="refresh_interval")
 
-# --- CONVERTER TIMEFRAME FOR INDODAX ---
+# --- CONVERTER TIMEFRAME RESMI INDODAX ---
 timeframe_mapping = {"1 Menit": "1", "5 Menit": "5", "15 Menit": "15", "1 Jam": "60", "1 Hari": "1D"}
 selected_timeframe_api = timeframe_mapping.get(st.session_state.timeframe_label, "5")
 
+# --- KONEKSI CCXT API INDODAX ---
 exchange = None
-if st.session_state.api_key and st.session_state.secret_key:
+if st.session_state.api_key.strip() and st.session_state.secret_key.strip():
     try:
         exchange = ccxt.indodax({
             'apiKey': str(st.session_state.api_key).strip(),
@@ -75,34 +80,30 @@ if st.session_state.api_key and st.session_state.secret_key:
             'enableRateLimit': True
         })
         st.sidebar.success("✅ Koneksi API Aman & Terkunci!")
-    except Exception as e:
-        st.sidebar.error(f"Gagal inisialisasi API: {e}")
+    except:
+        st.sidebar.error("Gagal menghubungkan API. Cek koneksi internet.")
 else:
-    st.sidebar.warning("⚠️ Masukkan API Key untuk mengaktifkan fitur live trading.")
+    st.sidebar.warning("⚠️ Masukkan API Key untuk memulai live trading.")
 
 # --- ENGINE MONITORING UTAMA ---
-# Pastikan interval refresh tidak kosong dan berupa angka int valid
-try:
-    current_refresh = int(st.session_state.refresh_interval) if st.session_state.refresh_interval else 30
-except:
-    current_refresh = 30
+# Pastikan waktu refresh aman dari nilai kosong
+current_refresh = int(st.session_state.refresh_interval) if st.session_state.refresh_interval else 30
 
 @st.fragment(run_every=current_refresh)
 def run_trading_bot():
     if not exchange:
-        st.info("Standby. Menunggu kredensial API Indodax.")
+        st.info("Standby. Menunggu kredensial API Indodax dimasukkan.")
         return
         
     try:
         st.caption(f"🔄 Sinkronisasi Terakhir: {time.strftime('%Y-%m-%d %H:%M:%S')}")
         
-        # Ambil simbol trading dengan aman
         current_symbol = str(st.session_state.symbol).strip() if st.session_state.symbol else "BTC/IDR"
         
-        # 1. Ambil Saldo & Data Ticker Volume
+        # 1. Ambil Saldo & Data Ticker Volume Pasaran
         balance = exchange.fetch_balance()
         ticker = exchange.fetch_ticker(current_symbol)
-        volume_24h_idr = ticker.get('quoteVolume', 0) if ticker else 0
+        volume_24h_idr = float(ticker.get('quoteVolume', 0)) if ticker else 0.0
         
         symbol_split = current_symbol.split('/')
         base_asset = symbol_split[0] if len(symbol_split) > 0 else 'BTC'
@@ -119,27 +120,14 @@ def run_trading_bot():
         # 2. Ambil Candlestick & Hitung Indikator (FAILSAFE KETAT)
         ohlcv = exchange.fetch_ohlcv(current_symbol, selected_timeframe_api, limit=100)
         if not ohlcv:
-            st.error("Data pasar tidak ditemukan dari server Indodax.")
+            st.error("Data pasar kosong. Cek keselarasan Simbol Trading Anda.")
             return
             
         df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
         df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
         
-        # Konversi super ketat untuk meredam error 'invalid literal'
-        def safe_int(value, default):
-            try:
-                return int(float(value)) if value != '' and value is not None else default
-            except:
-                return default
-
-        def safe_float(value, default):
-            try:
-                return float(value) if value != '' and value is not None else default
-            except:
-                return default
-
-        fast_p = safe_int(st.session_state.fast_period, 9)
-        slow_p = safe_int(st.session_state.slow_period, 20)
+        fast_p = int(st.session_state.fast_period)
+        slow_p = int(st.session_state.slow_period)
         
         df['hhma_fast'] = calculate_hma(df['close'], fast_p)
         df['hhma_slow'] = calculate_hma(df['close'], slow_p)
@@ -157,21 +145,28 @@ def run_trading_bot():
         fig.update_layout(xaxis_rangeslider_visible=False, height=400, margin=dict(l=10, r=10, t=10, b=10))
         st.plotly_chart(fig, use_container_width=True)
 
-        # 4. LOGIKA EVALUASI RISIKO & SELEKSI VOLUME
-        hhma_gap_pct = abs(df.loc[latest_idx, 'hhma_fast'] - df.loc[latest_idx, 'hhma_slow']) / df.loc[latest_idx, 'hhma_slow'] * 100 if df.loc[latest_idx, 'hhma_slow'] != 0 else 0
+        # 4. LOGIKA EVALUASI RISIKO & SELEKSI FILTER
+        hhma_slow_val = df.loc[latest_idx, 'hhma_slow']
+        hhma_gap_pct = abs(df.loc[latest_idx, 'hhma_fast'] - hhma_slow_val) / hhma_slow_val * 100 if hhma_slow_val != 0 else 0
         
-        base_buy_signal = (df.loc[latest_idx, 'hhma_fast'] > df.loc[latest_idx, 'hhma_slow']) and (df.loc[prev_idx, 'hhma_fast'] <= df.loc[prev_idx, 'hhma_slow'])
-        base_sell_signal = (df.loc[latest_idx, 'hhma_fast'] < df.loc[latest_idx, 'hhma_slow']) and (df.loc[prev_idx, 'hhma_fast'] >= df.loc[prev_idx, 'hhma_slow'])
+        base_buy_signal = (df.loc[latest_idx, 'hhma_fast'] > hhma_slow_val) and (df.loc[prev_idx, 'hhma_fast'] <= df.loc[prev_idx, 'hhma_slow'])
+        base_sell_signal = (df.loc[latest_idx, 'hhma_fast'] < hhma_slow_val) and (df.loc[prev_idx, 'hhma_fast'] >= df.loc[prev_idx, 'hhma_slow'])
 
-        # Ambil nilai kontrol risiko dengan aman
-        min_vol = safe_float(st.session_state.min_volume_idr, 50000000.0)
-        fake_filter = safe_float(st.session_state.fake_signal_filter, 0.05)
-        sl_pct = safe_float(st.session_state.stop_loss_pct, 2.0)
-        tp_pct = safe_float(st.session_state.target_profit_pct, 4.0)
-        trail_pct = safe_float(st.session_state.trailing_step_pct, 1.0)
-        last_buy = safe_float(st.session_state.last_buy_price, 0.0)
+        # Proteksi Konversi String ke Float untuk Harga Beli Terakhir
+        try:
+            cleaned_buy_price = str(st.session_state.last_buy_price).replace(",", "").replace(" ", "")
+            last_buy = float(cleaned_buy_price) if cleaned_buy_price != '' else 0.0
+        except:
+            last_buy = 0.0
+
+        # Ambil nilai kontrol risiko aman dari slider
+        fake_filter = float(st.session_state.fake_signal_filter)
+        sl_pct = float(st.session_state.stop_loss_pct)
+        tp_pct = float(st.session_state.target_profit_pct)
+        trail_pct = float(st.session_state.trailing_step_pct)
         
-        is_volume_liquid = volume_24h_idr >= min_vol
+        # Validasi Keras: Minimal Volume Harian Harus > 50 Juta IDR
+        is_volume_liquid = volume_24h_idr >= 50000000.0
         is_buy_signal = base_buy_signal and (hhma_gap_pct >= fake_filter) and is_volume_liquid
         is_sell_signal = base_sell_signal
 
@@ -196,12 +191,12 @@ def run_trading_bot():
                 trailing_stop_level = st.session_state.highest_price_since_buy * (1 - (trail_pct / 100))
                 if current_close <= trailing_stop_level:
                     execute_emergency_sell = True
-                    emergency_reason = f"Trailing Stop Mengunci Profit Dipicu!"
+                    emergency_reason = "Trailing Stop Mengunci Profit Dipicu!"
             elif is_signal_invalidated:
                 execute_emergency_sell = True
                 emergency_reason = "Sinyal Beli Hilang Darurat (HHMA berpotongan balik!). Sistem keluar pasar."
 
-        # Tampilkan Informasi Metrik Pasarnya
+        # Tampilkan Informasi Papan Metrik Pasar
         col_p1, col_p2, col_p3 = st.columns(3)
         col_p1.metric("Harga Saat Ini", f"{current_close:,.0f} IDR")
         col_p2.metric("Gap Jarak HHMA", f"{hhma_gap_pct:.3f}%")
@@ -211,7 +206,7 @@ def run_trading_bot():
         else:
             col_p3.metric("Performa Posisi Anda", "0.00% (Tidak Ada Koin)")
 
-        # 5. EXECUTION ENGINE
+        # 5. EXECUTION ENGINE (SISTEM EKSEKUSI MARKET ORDER)
         st.subheader("⚡ Konsol Status Eksekusi")
         
         if execute_emergency_sell:
@@ -219,38 +214,38 @@ def run_trading_bot():
             if saldo_kripto > 0.0001:
                 order = exchange.create_market_sell_order(current_symbol, saldo_kripto)
                 st.success(f"💥 Sukses Keluar Pasar! ID Order: {order['id']}")
-                st.session_state.last_buy_price = 0.0
+                st.session_state.last_buy_price = "0"
                 st.session_state.highest_price_since_buy = 0.0
             else:
-                st.error("Gagal melakukan aksi jual darurat: Saldo koin kosong.")
-                st.session_state.last_buy_price = 0.0
+                st.error("Gagal melakukan aksi jual darurat: Saldo koin di portofolio kosong.")
+                st.session_state.last_buy_price = "0"
         
         elif is_buy_signal and last_buy == 0:
-            st.warning("🔴 SINYAL BUY VALIDE & LIKUID! Membuka posisi...")
-            trade_amt = safe_float(st.session_state.trade_amount, 50000)
+            st.warning("🔴 SINYAL BUY VALID & LIKUID! Membuka posisi...")
+            trade_amt = float(st.session_state.trade_amount)
             if saldo_idr >= trade_amt:
                 amount_to_buy = trade_amt / current_close
                 order = exchange.create_market_buy_order(current_symbol, amount_to_buy)
                 st.success(f"🛒 Pembelian Berhasil! ID Order: {order['id']}")
-                st.session_state.last_buy_price = current_close
+                st.session_state.last_buy_price = str(int(current_close))
                 st.session_state.highest_price_since_buy = current_close
             else:
-                st.error("Gagal Beli: Saldo rupiah tidak mencukupi.")
+                st.error("Gagal Beli: Saldo rupiah di akun Indodax tidak mencukupi.")
                 
         elif is_sell_signal and last_buy > 0:
-            st.warning("🟢 SINYAL JUAL REGULER DETEKSI! Menutup posisi...")
+            st.warning("🟢 SINYAL JUAL REGULER (DEATH CROSS)! Menutup posisi...")
             if saldo_kripto > 0.0001:
                 order = exchange.create_market_sell_order(current_symbol, saldo_kripto)
                 st.success(f"✅ Penjualan Berhasil! ID Order: {order['id']}")
-                st.session_state.last_buy_price = 0.0
+                st.session_state.last_buy_price = "0"
                 st.session_state.highest_price_since_buy = 0.0
             else:
                 st.error("Gagal Jual: Koin tidak ditemukan di portofolio.")
         else:
             if base_buy_signal and not is_volume_liquid:
-                st.error(f"❌ BUY DITOLAK! Sinyal HHMA valid, tetapi volume 24 jam koin ini ({volume_24h_idr:,.0f} IDR) berada di bawah batas minimum.")
+                st.error(f"❌ BUY DITOLAK! Sinyal HHMA valid, tetapi volume harian ({volume_24h_idr:,.0f} IDR) di bawah syarat minimal Rp 50.000.000.")
             elif base_buy_signal and not is_buy_signal:
-                st.warning("⚠️ Sinyal BUY ditolak karena jarak gap terlalu tipis (Potensi Sinyal Palsu).")
+                st.warning("⚠️ Sinyal BUY ditolak oleh filter jarak gap (Potensi Sinyal Palsu).")
             else:
                 st.info("Log: Kondisi pasar terpantau aman. Bot dalam mode monitor pasif.")
 
