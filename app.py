@@ -1,311 +1,143 @@
-import sqlite3
 import time
-import hmac
-import hashlib
-import urllib.parse
+import sqlite3
 import pandas as pd
-import streamlit as st
-import requests
+import numpy as np
+import ccxt
 
 # ==========================================
-# 1. DATABASE LOKAL & PENCATAT PERFORMANCE
+# 1. KONFIGURASI API INDODAX & PARAMETER
+# ==========================================
+API_KEY = 'ISI_API_KEY_ANDA_DISINI'
+SECRET_KEY = 'ISI_SECRET_KEY_ANDA_DISINI'
+SYMBOL = 'BTC/IDR'       # Sepasang aset yang ditransaksikan
+TIMEFRAME = '1d'         # Timeframe harian sesuai skrip Pine
+HMA_LENGTH = 2           # Panjang periode HMA sesuai skrip Pine
+REFRESH_INTERVAL = 60    # Jeda refresh data market (dalam detik)
+
+# Parameter Manajemen Risiko
+TAKE_PROFIT_PCT = 0.05   # Pelebaran profit / TP (Contoh: 5%)
+STOP_LOSS_PCT = 0.02     # Batasan rugi / SL (Contoh: 2%)
+
+# Inisialisasi API Indodax via CCXT
+exchange = ccxt.indodax({
+    'apiKey': API_KEY,
+    'secret': SECRET_KEY,
+    'enableRateLimit': True
+})
+
+# ==========================================
+# 2. MANAJEMEN DATABASE (Penyimpanan Data)
 # ==========================================
 def init_db():
-    conn = sqlite3.connect("indodax_sim_final.db")
+    conn = sqlite3.connect('trading_bot.db')
     cursor = conn.cursor()
-    cursor.execute("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)")
-    cursor.execute("""
+    # Tabel riwayat sinyal dan transaksi
+    cursor.execute('''
         CREATE TABLE IF NOT EXISTS trades (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            pair TEXT, type TEXT, price REAL, amount REAL, time TEXT, mode TEXT
+            timestamp TEXT,
+            signal_type TEXT,
+            price REAL,
+            tp_price REAL,
+            sl_price REAL,
+            status TEXT
         )
-    """)
-    cursor.execute("CREATE TABLE IF NOT EXISTS virtual_wallet (balance REAL, coin_balance REAL)")
-    cursor.execute("SELECT count(*) FROM virtual_wallet")
-    if cursor.fetchone()[0] == 0:
-        cursor.execute("INSERT INTO virtual_wallet VALUES (10000000.0, 0.0)") # Rp 10 Juta Saldo Demo
+    ''')
     conn.commit()
     conn.close()
 
-def save_setting(key, value):
-    conn = sqlite3.connect("indodax_sim_final.db")
+def save_trade(signal_type, price, tp_price, sl_price):
+    conn = sqlite3.connect('trading_bot.db')
     cursor = conn.cursor()
-    cursor.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", (key, str(value)))
+    cursor.execute('''
+        INSERT INTO trades (timestamp, signal_type, price, tp_price, sl_price, status)
+        VALUES (datetime('now'), ?, ?, ?, ?, 'OPEN')
+    ''', (signal_type, price, tp_price, sl_price))
     conn.commit()
     conn.close()
-
-def load_setting(key, default_value):
-    conn = sqlite3.connect("indodax_sim_final.db")
-    cursor = conn.cursor()
-    cursor.execute("SELECT value FROM settings WHERE key = ?", (key,))
-    row = cursor.fetchone()
-    conn.close()
-    
-    if row:
-        val = str(row[0]).strip()
-        if val.lower() == 'true': return True
-        if val.lower() == 'false': return False
-        try:
-            if '.' in val: return float(val)
-            return int(val)
-        except ValueError:
-            return val
-    return default_value
-
-def get_virtual_balance():
-    conn = sqlite3.connect("indodax_sim_final.db")
-    cursor = conn.cursor()
-    cursor.execute("SELECT balance, coin_balance FROM virtual_wallet")
-    row = cursor.fetchone()
-    conn.close()
-    return row[0], row[1]
-
-def update_virtual_balance(idr, coin):
-    conn = sqlite3.connect("indodax_sim_final.db")
-    cursor = conn.cursor()
-    cursor.execute("UPDATE virtual_wallet SET balance = ?, coin_balance = ?", (idr, coin))
-    conn.commit()
-    conn.close()
-
-def log_trade(pair, trade_type, price, amount, mode):
-    conn = sqlite3.connect("indodax_sim_final.db")
-    cursor = conn.cursor()
-    cursor.execute("INSERT INTO trades (pair, type, price, amount, time, mode) VALUES (?, ?, ?, ?, ?, ?)",
-                   (pair, trade_type, price, amount, time.strftime('%Y-%m-%d %H:%M:%S'), mode))
-    conn.commit()
-    conn.close()
-
-init_db()
+    print(f" Data {signal_type} berhasil disimpan ke database.")
 
 # ==========================================
-# 2. RUMUS INDIKATOR KUANTITATIF (NATIVE)
+# 3. PERHITUNGAN RUMUS INDIKATOR HMA
 # ==========================================
-def calculate_ema(series, length):
-    return series.ewm(span=length, adjust=False).mean()
+def wma(series, length):
+    weights = np.arange(1, length + 1)
+    return series.rolling(length).apply(lambda x: np.dot(x, weights) / weights.sum(), raw=True)
 
-def calculate_hma(series, length):
-    import numpy as np
-    length = int(length)
-    if len(series) < length: return series
+def calculate_hma(df, length):
+    # Rumus asli Hull Moving Average (HMA)
     half_length = int(length / 2)
     sqrt_length = int(np.sqrt(length))
-    wma_half = series.rolling(half_length).apply(lambda x: np.dot(x, np.arange(1, half_length + 1)) / np.arange(1, half_length + 1).sum(), raw=True)
-    wma_full = series.rolling(length).apply(lambda x: np.dot(x, np.arange(1, length + 1)) / np.arange(1, length + 1).sum(), raw=True)
-    diff = 2 * wma_half - wma_full
-    return diff.rolling(sqrt_length).apply(lambda x: np.dot(x, np.arange(1, sqrt_length + 1)) / np.arange(1, sqrt_length + 1).sum(), raw=True)
-
-def calculate_rsi(series, length):
-    delta = series.diff()
-    gain = (delta.where(delta > 0, 0)).rolling(window=int(length)).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(window=int(length)).mean()
-    rs = gain / (loss + 1e-10)
-    return 100 - (100 / (1 + rs))
-
-def calculate_atr(df, length):
-    high_low = df['High'] - df['Low']
-    high_close = (df['High'] - df['Close'].shift()).abs()
-    low_close = (df['Low'] - df['Close'].shift()).abs()
-    return pd.concat([high_low, high_close, low_close], axis=1).max(axis=1).rolling(int(length)).mean()
+    
+    wma_half = wma(df['close'], half_length)
+    wma_full = wma(df['close'], length)
+    
+    raw_hma = (2 * wma_half) - wma_full
+    df['hma'] = wma(raw_hma, sqrt_length)
+    return df
 
 # ==========================================
-# 3. KONEKSI API INDODAX (PUBLIC & PRIVATE)
+# 4. LOGIKA EKSEKUSI TRADING (CORE BOT)
 # ==========================================
-def fetch_indodax_market_data(pair):
-    try:
-        # FIX: URL Endpoint Public API Indodax yang benar
-        url = f"https://indodax.com/api/{pair}/ticker"
-        res = requests.get(url, timeout=5).json()
-        
-        last_price = float(res['ticker']['last'])
-        coin_prefix = pair.split('_')[0]
-        base_vol = float(res['ticker'].get('vol_' + coin_prefix, 0))
-        
-        prices = [last_price * (1 + (i * 0.0006 if i % 2 == 0 else -i * 0.0005)) for i in range(-29, 0)] + [last_price]
-        vols = [base_vol * (1 + (i * 0.01 if i % 2 == 0 else -i * 0.01)) for i in range(-29, 0)] + [base_vol]
-        
-        df = pd.DataFrame({
-            'Close': prices, 'High': [p * 1.002 for p in prices], 'Low': [p * 0.998 for p in prices], 'Volume': vols
-        })
-        return df
-    except Exception:
-        return None
-
-def indodax_private_api(api_key, secret_key, method, params={}):
-    if not api_key or not secret_key: 
-        return None, "Kredensial API Kosong"
-    try:
-        params['method'] = method
-        params['nonce'] = int(time.time() * 1000)
-        post_data = urllib.parse.urlencode(params)
-        
-        signature = hmac.new(bytes(secret_key, 'utf-8'), bytes(post_data, 'utf-8'), hashlib.sha512).hexdigest()
-        # FIX: Header Content-Type wajib ditambahkan untuk otentikasi server Indodax
-        headers = {
-            'Key': api_key, 
-            'Sign': signature,
-            'Content-Type': 'application/x-www-form-urlencoded'
-        }
-        
-        res = requests.post("https://indodax.com", data=params, headers=headers, timeout=5).json()
-        if res.get('success') == 1: 
-            return res['return'], "Sukses"
-        else:
-            return None, f"Gagal API: {res.get('error', 'Akses Ditolak')}"
-    except Exception as e: 
-        return None, f"Koneksi Bermasalah: {str(e)}"
-
-# ==========================================
-# 4. ANTARMUKA PANEL UTAMA (UI)
-# ==========================================
-st.set_page_config(page_title="Indodax Sniper Pro v2", page_icon="🛡️", layout="wide")
-st.title("🛡️ HHMA Renko Sniper Pro - Indodax Edition")
-st.write("---")
-
-if 'autopilot' not in st.session_state:
-    st.session_state.autopilot = False
-
-col_left, col_right = st.columns(2)
-
-with col_left:
-    st.header("🕹️ PANEL KENDALI INDIKATOR")
-    saved_pair = load_setting("pair", "btc_idr")
-    pair_list = ["btc_idr", "eth_idr", "sol_idr"]
-    pair = st.selectbox("Asset Pair Selector", pair_list, index=pair_list.index(saved_pair) if saved_pair in pair_list else 0)
-    timeframe = st.selectbox("Timeframe (Fokus Satu TF)", ["4h"], index=0)
+def run_bot():
+    print("Bot berjalan... Menunggu pembaruan data market.")
+    last_signal = 0 # Mengunci status sinyal agar bergantian
     
-    candles = st.number_input("Jumlah Lilin di Layar", value=int(load_setting("candles", 10)))
-    hma_len = st.number_input("HMA Length", value=int(load_setting("hma_len", 5)))
-    ema_len = st.number_input("EMA Length", value=int(load_setting("ema_len", 5)))
-    rsi_len = st.number_input("RSI Length", value=int(load_setting("rsi_len", 5)))
-    vol_ma_len = st.number_input("Volume MA Length", value=int(load_setting("vol_ma_len", 5)))
-    atr_len = st.number_input("ATR Length", value=int(load_setting("atr_len", 5)))
-    
-    # FITUR BARU: Pembatasan Dana Maksimal Penggunaan Modal per Entry (Money Management)
-    max_fund_pct = st.slider("Maksimal Alokasi Modal per Transaksi (%)", min_value=10, max_value=100, value=int(load_setting("max_fund_pct", 20)), step=5)
-    
-    if st.button("💾 Simpan Konfigurasi Indikator"):
-        save_setting("pair", pair)
-        save_setting("candles", candles)
-        save_setting("hma_len", hma_len)
-        save_setting("ema_len", ema_len)
-        save_setting("rsi_len", rsi_len)
-        save_setting("vol_ma_len", vol_ma_len)
-        save_setting("atr_len", atr_len)
-        save_setting("max_fund_pct", max_fund_pct)
-        st.success("Konfigurasi Berhasil Disimpan!")
-        st.rerun()
-
-    st.write("---")
-    st.header("🔑 KREDENSIAL & AKUN")
-    
-    trade_mode = st.radio("Mode Eksekusi Perdagangan", ["Simulasi (Virtual)", "Akun Riil (Uang Asli)"])
-    
-    api_key = st.text_input("Indodax API Key", value=str(load_setting("api_key", "")), type="password")
-    secret_key = st.text_input("Indodax Secret Key", value=str(load_setting("secret_key", "")), type="password")
-    
-    if st.button("💾 Kunci API Credential"):
-        save_setting("api_key", api_key)
-        save_setting("secret_key", secret_key)
-        st.success("Kredensial API tersimpan aman!")
-        st.rerun()
-        
-    st.write("---")
-    st.header("🤖 STATUS BOT AUTO-TRADE")
-    auto_status = st.toggle("Aktifkan Auto-Trading Autopilot", value=st.session_state.autopilot)
-    st.session_state.autopilot = auto_status
-    
-    if trade_mode == "Simulasi (Virtual)":
-        bal_idr, bal_coin = get_virtual_balance()
-        st.metric(label="Saldo Rupiah (Simulasi)", value=f"Rp {bal_idr:,.2f}")
-        st.metric(label=f"Saldo Koin ({pair.split('_')[0].upper()})", value=f"{bal_coin:.6f}")
-    else:
-        info_dana, msg = indodax_private_api(api_key, secret_key, "getInfo")
-        if info_dana:
-            bal_idr = float(info_dana['balance'].get('idr', 0))
-            bal_coin = float(info_dana['balance'].get(pair.split('_')[0], 0))
-            st.metric(label="Saldo Rupiah ASLI (Indodax)", value=f"Rp {bal_idr:,.2f}")
-            st.metric(label=f"Saldo Koin ASLI ({pair.split('_')[0].upper()})", value=f"{bal_coin:.6f}")
-        else:
-            st.warning(f"Gagal mengambil dompet asli: {msg}")
-            bal_idr, bal_coin = 0, 0
-
-# ==========================================
-# 5. PEMROSESAN DATA & LOGIKA GRAFIK (PANEL KANAN)
-# ==========================================
-with col_right:
-    st.header("📈 GRAFIK & SINYAL EKSEKUSI")
-    
-    df_market = fetch_indodax_market_data(pair)
-    
-    if df_market is not None and not df_market.empty:
-        df_market['HMA'] = calculate_hma(df_market['Close'], hma_len)
-        df_market['EMA'] = calculate_ema(df_market['Close'], ema_len)
-        df_display = df_market.tail(int(candles)).copy()
-        
-        st.subheader(f"Pergerakan Tren {pair.upper()}")
-        st.line_chart(df_display, y=['Close', 'HMA', 'EMA'])
-        
-        last_row = df_display.iloc[-1]
-        prev_row = df_display.iloc[-2]
-        current_price = last_row['Close']
-        
-        st.write("---")
-        st.subheader("📢 Eksekusi Sinyal & Aksi Bot")
-        
-        is_buy_signal = prev_row['HMA'] <= prev_row['EMA'] and last_row['HMA'] > last_row['EMA']
-        is_sell_signal = prev_row['HMA'] >= prev_row['EMA'] and last_row['HMA'] < last_row['EMA']
-        
-        # Hitung batasan dana belanja berdasarkan slider Money Management (%)
-        trading_budget = bal_idr * (max_fund_pct / 100)
-        
-        if is_buy_signal:
-            st.success(f"🚀 **SINYAL BUY (🟢):** Harga Rp {current_price:,}")
-            if st.session_state.autopilot and bal_idr > 10000:
-                if trade_mode == "Simulasi (Virtual)":
-                    allocated_coin = trading_budget / current_price
-                    remaining_idr = bal_idr - trading_budget
-                    update_virtual_balance(remaining_idr, bal_coin + allocated_coin)
-                    log_trade(pair, "buy", current_price, allocated_coin, "simulated")
-                    st.toast(f"🤖 Bot Virtual Beli Berhasil Menggunakan {max_fund_pct}% Modal!", icon="🛒")
-                    st.rerun()
-                elif trade_mode == "Akun Riil (Uang Asli)":
-                    order_params = {'pair': pair, 'type': 'buy', 'idr': int(trading_budget)}
-                    res_order, msg = indodax_private_api(api_key, secret_key, "trade", order_params)
-                    if res_order:
-                        log_trade(pair, "buy", current_price, trading_budget / current_price, "real")
-                        st.toast(f"🔥 BOT BERHASIL BELI SEJUMLAH Rp {trading_budget:,.0f} DI INDODAX!", icon="💰")
-                        st.rerun()
-                    else:
-                        st.error(f"Eksekusi beli pasar gagal: {msg}")
+    while True:
+        try:
+            # Auto-Refresh: Ambil data candlestick terbaru
+            bars = exchange.fetch_ohlcv(SYMBOL, TIMEFRAME, limit=100)
+            df = pd.DataFrame(bars, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+            df = calculate_hma(df, HMA_LENGTH)
+            
+            if len(df) < 3:
+                continue
                 
-        elif is_sell_signal:
-            st.error(f"⚠️ **SINYAL SELL (🔴):** Harga Rp {current_price:,}")
-            if st.session_state.autopilot:
-                if trade_mode == "Simulasi (Virtual)" and bal_coin > 0:
-                    returned_idr = bal_coin * current_price
-                    update_virtual_balance(bal_idr + returned_idr, 0)
-                    log_trade(pair, "sell", current_price, bal_coin, "simulated")
-                    st.toast("🤖 Bot Virtual Berhasil Likuidasi Seluruh Koin!", icon="🛒")
-                    st.rerun()
-                elif trade_mode == "Akun Riil (Uang Asli)" and bal_coin > 0:
-                    order_params = {'pair': pair, 'type': 'sell', 'coin': bal_coin}
-                    res_order, msg = indodax_private_api(api_key, secret_key, "trade", order_params)
-                    if res_order:
-                        log_trade(pair, "sell", current_price, bal_coin, "real")
-                        st.toast("🔥 BOT BERHASIL JUAL SELURUH ASSET DI MARKET INDODAX!", icon="💰")
-                        st.rerun()
-                    else:
-                        st.error(f"Eksekusi jual pasar gagal: {msg}")
-        else:
-            st.info(f"⚖️ **SINYAL HOLD (⚪):** Menunggu Crossover. Harga: Rp {current_price:,}")
+            # Mengambil bar berjalan [ -1 ] dan bar sebelumnya [ -2 ] untuk deteksi cross
+            current_hma = df['hma'].iloc[-1]
+            prev_hma = df['hma'].iloc[-2]
+            prev_prev_hma = df['hma'].iloc[-3]
+            current_close = df['close'].iloc[-1]
             
-        st.write("---")
-        st.subheader("📜 Riwayat Trading Terakhir")
-        conn = sqlite3.connect("indodax_sim_final.db")
-        df_trades = pd.read_sql_query("SELECT type, price, amount, mode, time FROM trades ORDER BY id DESC LIMIT 5", conn)
-        conn.close()
-        if not df_trades.empty:
-            st.dataframe(df_trades, use_container_width=True)
+            # Logika Arah Kemiringan HMA (Sesuai is_green / is_red)
+            is_green_now = current_hma >= prev_hma
+            is_green_prev = prev_hma >= prev_prev_hma
             
-    else:
-        st.error("Gagal memuat data pasar dari Indodax. Periksa koneksi internet Anda.")
+            # Sinyal Perubahan Warna Pertama Kali (Raw Signal)
+            raw_buy = is_green_now and not is_green_prev
+            raw_sell = not is_green_now and is_green_prev
+            
+            # Eksekusi Sinyal (Sistem Pengunci Bergantian)
+            if raw_buy and last_signal != 1:
+                tp = current_close * (1 + TAKE_PROFIT_PCT)
+                sl = current_close * (1 - STOP_LOSS_PCT)
+                
+                print(f"\n[SINYAL BUY DETEKSI] Harga: {current_close} | TP: {tp} | SL: {sl}")
+                # Eksekusi order riil di Indodax (Aktifkan jika saldo siap)
+                # exchange.create_market_buy_order(SYMBOL, jumlah_beli)
+                
+                save_trade('BUY', current_close, tp, sl)
+                last_signal = 1
+                
+            elif raw_sell and last_signal != -1:
+                tp = current_close * (1 - TAKE_PROFIT_PCT)
+                sl = current_close * (1 + STOP_LOSS_PCT)
+                
+                print(f"\n[SINYAL SELL DETEKSI] Harga: {current_close} | TP: {tp} | SL: {sl}")
+                # exchange.create_market_sell_order(SYMBOL, jumlah_jual)
+                
+                save_trade('SELL', current_close, tp, sl)
+                last_signal = -1
+                
+            else:
+                print(f"Market Standby... Harga {SYMBOL}: {current_close} | HMA: {current_hma:.2f}", end="\r")
+
+        except Exception as e:
+            print(f"\n Terjadi error atau kendala jaringan: {e}")
+            
+        # Jeda waktu refresh otomatis data baru
+        time.sleep(REFRESH_INTERVAL)
+
+if __name__ == '__main__':
+    init_db()
+    run_bot()
