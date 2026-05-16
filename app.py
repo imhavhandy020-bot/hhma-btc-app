@@ -100,15 +100,19 @@ def fetch_live_indodax_data(pair):
 # 4. ENGINE EKSEKUSI API PRIVATE INDODAX (LIVE)
 # ==========================================
 def ambil_saldo_indodax(api_key, secret_key, pair):
+    """
+    Memanggil metode 'getInfo' untuk sinkronisasi saldo dompet riil.
+    FIXED: Memperbaiki AttributeError pemotongan teks string murni.
+    """
     url_tapi = "https://indodax.com"
     
-    # PERBAIKAN NONCE: Menggunakan lompatan milidetik yang aman dari blokir server Indodax
+    # Nonce aman dengan lompatan milidetik
     nonce = int(time.time() * 1000) + 2000
     payload = {'method': 'getInfo', 'nonce': nonce}
     
-    # PERBAIKAN STRING PAIR: Memotong kode koin agar tidak memicu error split string
+    # Mengambil indeks string pertama [0] baru diubah ke huruf kecil murni
     parts = pair.split('/')
-    coin_code = parts.lower() if len(parts) > 0 else "btc"
+    coin_code = parts[0].lower() if len(parts) > 0 else "btc"
     
     try:
         query_string = urlencode(payload)
