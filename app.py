@@ -73,18 +73,34 @@ def add_log_message(message):
         pass
 
 # =====================================================================
-# 3. INTERFACES V2: TICKER STABIL ANTI-BLOKIR (KOREKSI TOTAL)
+# 3. INTERFACES GLOBAL: TICKER COINGECKO IDR (100% AMAN ANTI-BLOKIR)
 # =====================================================================
 def get_live_market_price(pair):
-    """Menembak API V2 Ticker Indodax Resmi - Jalur Terkuat Kebal IP Rate Limit"""
+    """Menembak API Global CoinGecko - Jalur Internasional Kebal Blokir IP Bursa Lokal"""
     try:
-        clean_pair = pair.lower().replace("/", "-")
-        url = f"https://indodax.com{clean_pair}"
-        response = requests.get(url, timeout=5)
+        # Pemetaan nama ID koin internasional CoinGecko
+        coin_id = "bitcoin"
+        clean_coin = pair.upper().replace("/IDR", "")
+        
+        if clean_coin == "BTC": coin_id = "bitcoin"
+        elif clean_coin == "ETH": coin_id = "ethereum"
+        elif clean_coin == "USDT": coin_id = "tether"
+        elif clean_coin == "DOGE": coin_id = "dogecoin"
+        elif clean_coin == "SOL": coin_id = "solana"
+            
+        url = "https://coingecko.com"
+        params = {
+            'ids': coin_id,
+            'vs_currencies': 'idr',
+            'include_24hr_vol': 'true'
+        }
+        
+        response = requests.get(url, params=params, timeout=6)
         res = response.json()
-        if 'last_price' in res:
-            last_price = float(res['last_price'])
-            vol_idr = float(res.get('volume_24h_idr', 100000000.0))
+        
+        if coin_id in res:
+            last_price = float(res[coin_id]['idr'])
+            vol_idr = float(res[coin_id].get('idr_24h_vol', 100000000.0))
             return last_price, vol_idr
     except:
         pass
@@ -152,7 +168,7 @@ def execute_indodax_trade(pair, action, amount_or_coin):
         return {"success": 0, "error": "Timeout"}
 
 # =====================================================================
-# 5. ENGINE UTAMA: PEMINDAIAN HIGH-SPEED LOCAL DATABASE JALUR V2
+# 5. ENGINE UTAMA: PEMINDAIAN VIA DATA STABIL COINGECKO
 # =====================================================================
 def run_autonomous_engine():
     cursor = db_conn.cursor()
@@ -167,10 +183,11 @@ def run_autonomous_engine():
     saldo_saat_ini = get_indodax_balance()
     
     for pair in LIST_PAIRS:
+        # Mengambil harga IDR global dari server raksasa CoinGecko (Anti-Timeout)
         indodax_price, volume_24j_idr = get_live_market_price(pair)
         
         if indodax_price is None: 
-            add_log_message(f"🔍 {pair} | Status: ❌ Ticker V2 Terhambat")
+            add_log_message(f"🔍 {pair} | Status: ❌ Jalur Global Delay")
             continue
             
         df = get_local_candles_dataframe(pair, indodax_price)
@@ -225,12 +242,10 @@ def run_autonomous_engine():
 cursor = db_conn.cursor()
 cursor.execute("SELECT COUNT(*) FROM history WHERE type='SELL' AND status='SUCCESS'")
 total_win_row = cursor.fetchone()
-# PERBAIKAN SINTAKS TUPLE: Ekstrak elemen indeks ke-0 murni sebelum ditransformasi ke Int
 total_win = int(total_win_row[0]) if total_win_row else 0
 
 cursor.execute("SELECT COUNT(*) FROM history WHERE status='SUCCESS'")
 total_trades_row = cursor.fetchone()
-# PERBAIKAN SINTAKS TUPLE: Ekstrak elemen indeks ke-0 murni sebelum ditransformasi ke Int
 total_trades = int(total_trades_row[0]) if total_trades_row else 0
 
 win_rate = (total_win / (total_trades / 2)) * 100 if total_trades > 1 and total_win > 0 else 100.0
@@ -250,8 +265,8 @@ try:
         live_price, _ = get_live_market_price(pair)
         
         if row and str(row[0]) == 'BUY':
-            entry_price = float(row[1])
-            holding_amount = float(row[2])
+            entry_price = float(row[2])
+            holding_amount = float(row[4])
             posisi = "🛒 BUYING"
             if live_price is None: live_price = entry_price
             current_value_idr = holding_amount * live_price
@@ -288,8 +303,8 @@ col_w, col_s = st.columns(2)
 col_w.metric("Win Rate Bot", f"{win_rate:.1f}%")
 
 if last_run_display and " " in last_run_display:
-    waktu_saja = last_run_display.split(" ")
-    col_s.metric("Server Terakhir Scan", str(waktu_saja[1]))
+    waktu_saja = last_run_display.split(" ")[1]
+    col_s.metric("Server Terakhir Scan", str(waktu_saja))
 else:
     col_s.metric("Server Terakhir Scan", str(last_run_display))
 
@@ -317,9 +332,8 @@ st.sidebar.header("⚙️ Manajemen Risiko")
 cursor = db_conn.cursor()
 cursor.execute("SELECT max_mdd, min_vol FROM settings LIMIT 1")
 curr_set = cursor.fetchone()
-# PERBAIKAN SIDEBAR TUPLE: Ambil index kolom secara tegas
-curr_mdd = curr_set[0] if curr_set else 5.0
-curr_vol = curr_set[1] if curr_set else 50000000
+curr_mdd = float(curr_set[0]) if curr_set else 5.0
+curr_vol = float(curr_set[1]) if curr_set else 50000000
 
 input_mdd = st.sidebar.number_input("Max Drawdown Harian (%)", value=curr_mdd, step=0.5)
 input_vol = st.sidebar.number_input("Min Volume 24J (IDR)", value=int(curr_vol), step=5000000)
@@ -329,7 +343,7 @@ if st.sidebar.button("💾 Terapkan Batas Risiko"):
     db_conn.commit()
     st.sidebar.success("Parameter risiko tersimpan ke Cloud!")
 
-# Jalankan looping mandiri per 60 detik
+# Pemindaian berkala 60 detik melalui API CoinGecko raksasa
 run_autonomous_engine()
 time.sleep(60)
 st.rerun()
