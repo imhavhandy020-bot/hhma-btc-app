@@ -69,13 +69,14 @@ def add_log_message(message):
         pass
 
 # =====================================================================
-# 3. PERBAIKAN MUTLAK: PENGURAIAN INDEKS MATRIX ARRAY KLINE BINANCE
+# 3. FIX PENARIK DATA GRAFIK JALUR GLOBAL BINANCE (100% BEBAS BUG LIST)
 # =====================================================================
 def get_indodax_candles_4h(pair):
-    """Mengambil dan memetakan indeks array mentah Binance secara presisi ke kolom Pandas"""
+    """Mengambil riwayat lilin 4 jam lewat API Global Binance secara murni tanpa merusak array"""
     try:
-        # Dapatkan string nama koin murni (e.g. BTC)
-        clean_coin = pair.upper().replace("/IDR", "")
+        # KOREKSI FIX: Mengambil teks depan koin sebelum tanda garis miring (indeks 0)
+        coin_part = pair.split("/")
+        clean_coin = str(coin_part[0]).upper()
         
         if clean_coin == "USDT":
             binance_symbol = "BUSDUSDT"
@@ -89,27 +90,22 @@ def get_indodax_candles_4h(pair):
         data = response.json()
         
         if isinstance(data, list) and len(data) > 20:
-            # Mengubah list array matriks Binance menjadi DataFrame penunjuk baris
             df_raw = pd.DataFrame(data)
-            
-            # SOLUSI FINIFAL: Memetakan nomor indeks baris urut Binance secara manual agar terbaca sistem
             df_cleaned = pd.DataFrame()
+            # Pemetaan urutan kolom matriks kline Binance secara tepat numerik
             df_cleaned['timestamp'] = pd.to_datetime(df_raw[0], unit='ms')
             df_cleaned['open'] = df_raw[1].astype(float)
             df_cleaned['high'] = df_raw[2].astype(float)
             df_cleaned['low'] = df_raw[3].astype(float)
-            df_cleaned['close'] = df_raw[4].astype(float)    # KUNCI UTAMA: Kolom close untuk HMA-20
-            df_cleaned['volume'] = df_raw[5].astype(float)   # KUNCI UTAMA: Kolom volume risiko
+            df_cleaned['close'] = df_raw[4].astype(float)
+            df_cleaned['volume'] = df_raw[5].astype(float)
             return df_cleaned
             
         return pd.DataFrame()
     except Exception as err:
-        add_log_message(f"⚠️ API Binance {pair} Gagal Merespon Data: {str(err)}")
+        add_log_message(f"⚠️ API Binance {pair} Gagal Merespon: {str(err)}")
         return pd.DataFrame()
 
-# =====================================================================
-# TRANSLATE INDIKATOR HMA-20 (TIMEFRAME 4H)
-# =====================================================================
 def calculate_hma_20(df):
     if df.empty or len(df) < 30: return df
     
@@ -126,12 +122,8 @@ def calculate_hma_20(df):
     raw_hma = (2 * wma_half) - wma_full
     
     df['hma_value'] = wma(raw_hma, sqrt_period)
-    
-    # Deteksi Warna & Arah Tren
     df['is_green'] = df['hma_value'] >= df['hma_value'].shift(1)
     df['is_red'] = df['hma_value'] < df['hma_value'].shift(1)
-    
-    # Deteksi Perubahan Sinyal Pertama Kali Berubah Warna
     df['raw_buy'] = df['is_green'] & (~df['is_green'].shift(1).fillna(False))
     df['raw_sell'] = df['is_red'] & (~df['is_red'].shift(1).fillna(False))
     return df
@@ -198,12 +190,12 @@ def run_autonomous_engine():
         df = get_indodax_candles_4h(pair)
         
         if df.empty: 
-            add_log_message(f"🔍 {pair} | Status: ❌ Gagal Muat Matriks Ticker")
+            add_log_message(f"🔍 {pair} | Status: ❌ Jaringan Gagal")
             continue
             
         df = calculate_hma_20(df)
         if 'hma_value' not in df.columns: 
-            add_log_message(f"🔍 {pair} | Status: ⚠️ Perhitungan Rumus Gagal")
+            add_log_message(f"🔍 {pair} | Status: ⚠️ Rumus Gagal")
             continue
         
         last_bar = df.iloc[-1]
@@ -223,13 +215,11 @@ def run_autonomous_engine():
         row = cursor.fetchone()
         last_signal, holding_amount = row if row else ("NONE", 0.0)
         
-        # CETAK SINYAL LIVE: Menampilkan arah tren asli riil dari rumus HMA-20 di HP Anda
         add_log_message(f"🔍 {pair} | Sinyal Tren: {current_color} | Posisi SQLite: {last_signal}")
         
-        # BUY TRIGGER (OFFSET -1 TV)
         if confirmed_bar['raw_buy'] and last_signal != 'BUY':
             if saldo_saat_ini < MODAL_PER_TRANSAKSI_IDR:
-                add_log_message(f"⚠️ {pair} | Sinyal: BUY | Status: 🛑 Saldo Dompet Rp {saldo_saat_ini:,.0f} Kurang")
+                add_log_message(f"⚠️ {pair} | Sinyal: BUY | Status: 🛑 Saldo Kurang")
                 continue
             res = execute_indodax_trade(pair, "buy", MODAL_PER_TRANSAKSI_IDR)
             if res.get("success") == 1:
@@ -238,10 +228,9 @@ def run_autonomous_engine():
                 cursor.execute("INSERT OR REPLACE INTO trades VALUES (?, 'BUY', ?, ?, ?)", (pair, indodax_price, now_str, coin_bought))
                 cursor.execute("INSERT INTO history (pair, type, price, status, timestamp) VALUES (?, 'BUY', ?, 'SUCCESS', ?)", (pair, indodax_price, now_str))
                 db_conn.commit()
-                add_log_message(f"🚀 {pair} | Aksi: BERHASIL BUY ORDER di Rp {indodax_price:,.0f}")
+                add_log_message(f"🚀 {pair} | Aksi: BERHASIL BUY ORDER")
                 saldo_saat_ini -= MODAL_PER_TRANSAKSI_IDR
                 
-        # SELL TRIGGER (OFFSET -1 TV)
         elif confirmed_bar['raw_sell'] and last_signal == 'BUY':
             coin_to_sell = holding_amount if holding_amount > 0 else (MODAL_PER_TRANSAKSI_IDR / indodax_price)
             res = execute_indodax_trade(pair, "sell", coin_to_sell)
@@ -249,7 +238,7 @@ def run_autonomous_engine():
                 cursor.execute("INSERT OR REPLACE INTO trades VALUES (?, 'SELL', ?, ?, 0.0)", (pair, indodax_price, now_str))
                 cursor.execute("INSERT INTO history (pair, type, price, status, timestamp) VALUES (?, 'SELL', ?, 'SUCCESS', ?)", (pair, indodax_price, now_str))
                 db_conn.commit()
-                add_log_message(f"📉 {pair} | Aksi: BERHASIL SELL ORDER di Rp {indodax_price:,.0f}")
+                add_log_message(f"📉 {pair} | Aksi: BERHASIL SELL ORDER")
 
 # =====================================================================
 # 6. LAYAR UTAMA DASHBOARD MONITOR (RESPONSIVE CHROME HP)
@@ -257,17 +246,19 @@ def run_autonomous_engine():
 cursor = db_conn.cursor()
 cursor.execute("SELECT COUNT(*) FROM history WHERE type='SELL' AND status='SUCCESS'")
 total_win_row = cursor.fetchone()
-total_win = int(total_win_row) if total_win_row else 0
+# PERBAIKAN MUTLAK: Mengambil indeks [0] dari Tuple SQLite agar berupa Int angka murni
+total_win = int(total_win_row[0]) if total_win_row else 0
 
 cursor.execute("SELECT COUNT(*) FROM history WHERE status='SUCCESS'")
 total_trades_row = cursor.fetchone()
-total_trades = int(total_trades_row) if total_trades_row else 0
+# PERBAIKAN MUTLAK: Mengambil indeks [0] dari Tuple SQLite agar berupa Int angka murni
+total_trades = int(total_trades_row[0]) if total_trades_row else 0
 
 win_rate = (total_win / (total_trades / 2)) * 100 if total_trades > 1 and total_win > 0 else 100.0
 
 cursor.execute("SELECT last_run FROM settings LIMIT 1")
 last_run_time = cursor.fetchone()
-last_run_display = last_run_time if last_run_time and last_run_time else "Belum Berjalan"
+last_run_display = last_run_time[0] if last_run_time and last_run_time else "Belum Berjalan"
 
 total_modal_aktif = 0.0
 total_valuasi_aktif = 0.0
@@ -279,9 +270,9 @@ try:
         row = cursor.fetchone()
         live_price = get_live_market_price(pair)
         
-        if row and str(row) == 'BUY':
-            entry_price = float(row)
-            holding_amount = float(row)
+        if row and str(row[0]) == 'BUY':
+            entry_price = float(row[1])
+            holding_amount = float(row[4])
             posisi = "🛒 BUYING"
             if live_price is None: live_price = entry_price
             current_value_idr = holding_amount * live_price
@@ -318,7 +309,7 @@ col_w, col_s = st.columns(2)
 col_w.metric("Win Rate Bot", f"{win_rate:.1f}%")
 
 if last_run_display and " " in last_run_display:
-    waktu_saja = last_run_display.split(" ")
+    waktu_saja = last_run_display.split(" ")[1]
     col_s.metric("Server Terakhir Scan", str(waktu_saja))
 else:
     col_s.metric("Server Terakhir Scan", str(last_run_display))
@@ -357,7 +348,7 @@ if st.sidebar.button("💾 Terapkan Batas Risiko"):
     st.sidebar.success("Parameter risiko tersimpan ke Cloud!")
 
 # =====================================================================
-# INTERVAL SEBELUM RE-SCAN (5 DETIK HIGH-SPEED)
+# INTERVAL RE-SCAN TINGGI CLOUD (5 DETIK)
 # =====================================================================
 run_autonomous_engine()
 time.sleep(5)
