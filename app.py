@@ -9,7 +9,7 @@ import urllib.parse
 from datetime import datetime
 
 # ==============================================================================
-# 1. KONFIGURASI LAYAR & SIDEBAR HP (ANTI-RESET SESSION STATE)
+# 1. KONFIGURASI LAYAR & SIDEBAR HP (ANTI-RESET FORM)
 # ==============================================================================
 st.set_page_config(page_title="Indodax Pro Bot", layout="wide", initial_sidebar_state="collapsed")
 
@@ -27,15 +27,11 @@ st.markdown("""
 st.sidebar.title("📱 Kontrol Bot HP")
 st.sidebar.markdown("---")
 
-# Mengunci nilai agar tidak hilang/reset saat autorefresh menggunakan Session State
+# Inisialisasi Session State Utama
 if "modal_trade" not in st.session_state:
     st.session_state.modal_trade = 50000
 if "min_vol" not in st.session_state:
     st.session_state.min_vol = 50000000
-if "api_key" not in st.session_state:
-    st.session_state.api_key = ""
-if "api_secret" not in st.session_state:
-    st.session_state.api_secret = ""
 
 # Input Parameter Utama
 modal_per_trade = st.sidebar.number_input(
@@ -56,22 +52,12 @@ min_volume_24h = st.sidebar.number_input(
 )
 st.session_state.min_vol = min_volume_24h
 
-# INPUT API KEY SECURE & PERMANEN (Tidak akan hilang saat refresh)
-api_key_input = st.sidebar.text_input(
-    "Indodax API Key", 
-    value=st.session_state.api_key, 
-    type="password",
-    key="api_key_storage"
-)
-st.session_state.api_key = api_key_input
-
-api_secret_input = st.sidebar.text_input(
-    "Indodax Secret Key", 
-    value=st.session_state.api_secret, 
-    type="password",
-    key="api_secret_storage"
-)
-st.session_state.api_secret = api_secret_input
+# SOLUSI KUNCI PERMANEN: Membungkus API Key dalam Form agar tidak hilang saat Rerun
+with st.sidebar.form(key="api_secure_form"):
+    st.markdown("🔑 **Koneksi Akun Indodax**")
+    api_key_field = st.text_input("Indodax API Key", type="password", value=st.session_state.get("saved_key", ""))
+    api_secret_field = st.text_input("Indodax Secret Key", type="password", value=st.session_state.get("saved_secret", ""))
+    submit_api = st.form_submit_button("Hubungkan API Akun")
 
 # ==============================================================================
 # 2. INISIALISASI DATABASE & MANAJEMEN KONEKSI AMAN
@@ -102,13 +88,43 @@ def init_db():
                 message TEXT
             )
         """)
+        # Tabel internal penyimpan saldo riil terakhir agar tidak lenyap saat refresh
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS bot_settings (
+                key TEXT PRIMARY KEY,
+                value TEXT
+            )
+        """)
         permanent_pairs = ['BTC/IDR', 'ETH/IDR', 'USDT/IDR', 'SOL/IDR', 'DOGE/IDR']
         for pair in permanent_pairs:
             cursor.execute("INSERT OR IGNORE INTO positions VALUES (?, ?, ?, ?, ?)", 
                            (pair, 'WAITING_BUY', 0.0, 0.0, datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
+        
+        # Inisialisasi saldo bawaan awal jika database baru dibuat
+        cursor.execute("INSERT OR IGNORE INTO bot_settings VALUES ('last_balance', '1500000.0')")
+        cursor.execute("INSERT OR IGNORE INTO bot_settings VALUES ('api_status', 'Mode Simulasi')")
         conn.commit()
 
 init_db()
+
+def get_setting(key_name, default_value):
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT value FROM bot_settings WHERE key=?", (key_name,))
+            row = cursor.fetchone()
+            return row[0] if row else default_value
+    except Exception:
+        return default_value
+
+def update_setting(key_name, value_str):
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("INSERT OR REPLACE INTO bot_settings (key, value) VALUES (?, ?)", (key_name, str(value_str)))
+            conn.commit()
+    except Exception:
+        pass
 
 def get_positions():
     try:
@@ -152,11 +168,7 @@ def update_position(pair, status, buy_price, amount):
 # 3. KONEKSI PRIVATE API RIIL INDODAX (GET REAL BALANCE)
 # ==============================================================================
 def fetch_indodax_real_balance(api_key, api_secret):
-    if not api_key or not api_secret:
-        return 1500000.0, "Simulasi Aktif (Isi API Key)"
-        
     try:
-        # Standard Penulisan Nonce & Tanda Tangan Enkripsi Sesuai API Indodax
         payload = {
             'method': 'getInfo',
             'nonce': int(time.time() * 1000)
@@ -170,18 +182,29 @@ def fetch_indodax_real_balance(api_key, api_secret):
             'Content-Type': 'application/x-www-form-urlencoded'
         }
         
-        response = requests.post("https://indodax.com/tapi", data=payload, headers=headers, timeout=10).json()
+        response = requests.post("https://indodax.com", data=payload, headers=headers, timeout=10).json()
         
         if response.get('success') == 1:
             balances = response['return']['balance']
             idr_balance = float(balances.get('idr', 0))
             return idr_balance, "Koneksi Riil Sukses"
         else:
-            # Mengembalikan pesan error spesifik jika ditolak bursa Indodax
-            error_msg = response.get('error', 'Akses Ditolak')
-            return 0.0, f"Gagal: {error_msg}"
-    except Exception as e:
-        return 0.0, "Error Jaringan API"
+            return None, f"Gagal: {response.get('error', 'Kunci Salah')}"
+    except Exception:
+        return None, "Error Jaringan API"
+
+# Proses penyimpanan saat tombol Form ditekan di HP
+if submit_api:
+    st.session_state["saved_key"] = api_key_field
+    st.session_state["saved_secret"] = api_secret_field
+    
+    if api_key_field and api_secret_field:
+        real_bal, status_msg = fetch_indodax_real_balance(api_key_field, api_secret_field)
+        if real_bal is not None:
+            update_setting("last_balance", real_bal)
+            update_setting("api_status", status_msg)
+        else:
+            update_setting("api_status", status_msg)
 
 # ==============================================================================
 # 4. KONEKSI DATA CHART BINANCE GLOBAL & OPTIMASI LOGIKA HMA-20
@@ -232,8 +255,9 @@ def fetch_binance_4h_signals(pair):
 # ==============================================================================
 st.title("📊 Multi-Pair Pro Monitor")
 
-# Memuat Saldo Menggunakan State API Key Yang Terkunci
-saldo_idr_dompet, status_api_pesan = fetch_indodax_real_balance(st.session_state.api_key, st.session_state.api_secret)
+# Ambil nilai saldo dan status aman dari Database SQLite (Anti-Reset)
+saldo_idr_dompet = float(get_setting("last_balance", "1500000.0"))
+status_api_pesan = get_setting("api_status", "Mode Simulasi")
 
 col1, col2, col3 = st.columns(3)
 win_rate_sim = 68.5 
@@ -249,7 +273,7 @@ with col3:
 
 st.markdown("---")
 
-# Eksekusi Logika Otomatisasi
+# Jalankan Logika Otomatisasi Rem Saldo
 df_positions = get_positions()
 
 if not df_positions.empty and "Aset" in df_positions.columns:
@@ -266,6 +290,9 @@ if not df_positions.empty and "Aset" in df_positions.columns:
             if saldo_idr_dompet >= modal_per_trade:
                 amount_to_buy = modal_per_trade / target_price
                 saldo_idr_dompet -= modal_per_trade
+                
+                # Update saldo baru ke database penampung agar permanen
+                update_setting("last_balance", saldo_idr_dompet)
                 update_position(pair, 'HOLDING_SELL', target_price, amount_to_buy)
                 add_log(pair, 'BUY', f"Membeli menggunakan modal Rp{modal_per_trade:,.0f} pada harga Rp{target_price:,.2f}")
             else:
@@ -274,6 +301,9 @@ if not df_positions.empty and "Aset" in df_positions.columns:
         elif current_status == 'HOLDING_SELL' and signal == 'SELL':
             payout = row['Jumlah'] * target_price
             saldo_idr_dompet += payout
+            
+            # Update saldo baru ke database penampung agar permanen
+            update_setting("last_balance", saldo_idr_dompet)
             update_position(pair, 'WAITING_BUY', 0.0, 0.0)
             add_log(pair, 'SELL', f"Menjual seluruh aset ekivalen Rp{payout:,.0f} pada harga Rp{target_price:,.2f}")
 
@@ -284,6 +314,6 @@ st.table(get_positions())
 st.subheader("📜 Log Aktivitas Server")
 st.table(get_logs())
 
-# Autorefresh aman (5 Detik) agar data tidak saling mengunci
+# Autorefresh berkala aman (5 Detik)
 time.sleep(5)
 st.rerun()
