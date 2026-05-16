@@ -15,6 +15,7 @@ st.set_page_config(page_title="Indodax Multi-Pair Pro Bot", layout="centered")
 def init_db():
     conn = sqlite3.connect('trading_bot.db')
     cursor = conn.cursor()
+    # 1. Tabel Riwayat Transaksi (Mendukung Multi-Pair dengan Kolom 'pair')
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS trades (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -29,13 +30,24 @@ def init_db():
             status TEXT
         )
     ''')
-    try: cursor.execute("ALTER TABLE trades ADD COLUMN pair TEXT"); conn.commit()
-    except sqlite3.OperationalError: pass
-    try: cursor.execute("ALTER TABLE trades ADD COLUMN amount REAL"); conn.commit()
-    except sqlite3.OperationalError: pass
-    try: cursor.execute("ALTER TABLE trades ADD COLUMN highest_price REAL"); conn.commit()
-    except sqlite3.OperationalError: pass 
+    # Sinkronisasi kolom database lama
+    try:
+        cursor.execute("ALTER TABLE trades ADD COLUMN pair TEXT")
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass
+    try:
+        cursor.execute("ALTER TABLE trades ADD COLUMN amount REAL")
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass
+    try:
+        cursor.execute("ALTER TABLE trades ADD COLUMN highest_price REAL")
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass 
 
+    # 2. Tabel Pengaturan Permanen
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS settings (
             key TEXT PRIMARY KEY,
@@ -57,6 +69,7 @@ def save_setting(key, text_val="", num_val=0.0):
     conn.commit()
     conn.close()
 
+# PERBAIKAN TOTAL: Fungsi get_setting dipastikan hanya mengembalikan nilai tunggal (skalar), bukan tuple!
 def get_setting(key, default_text=None, default_num=None):
     conn = sqlite3.connect('trading_bot.db')
     cursor = conn.cursor()
@@ -64,8 +77,10 @@ def get_setting(key, default_text=None, default_num=None):
     row = cursor.fetchone()
     conn.close()
     if row:
-        if default_text is not None: return row if row is not None else default_text
-        if default_num is not None: return row if row is not None else default_num
+        if default_text is not None:
+            return row[0] if row[0] is not None else default_text
+        if default_num is not None:
+            return row[1] if row[1] is not None else default_num
     return default_text if default_text is not None else default_num
 
 def get_trade_history(filter_type="Semua"):
@@ -104,14 +119,19 @@ def clear_db():
     conn.commit()
     conn.close()
 
+# Hidupkan Database Fisik Pengunci
 init_db()
 
-# Parameter Kunci Mati
+# =========================================================
+# PARAMETER KUNCI MATI (4H & HMA 8)
+# =========================================================
 TIMEFRAME = "4h"   
 HMA_LENGTH = 8     
 
+# Pengambilan data menggunakan get_setting yang sudah diperbaiki
 db_api = get_setting("api_key", default_text="")
 db_secret = get_setting("secret_key", default_text="")
+db_symbol = get_setting("symbol", default_text="BTC/IDR")
 db_max_bars = int(get_setting("max_bars", default_num=100.0))
 db_tp_pct = get_setting("tp_pct", default_num=5.0)
 db_sl_pct = get_setting("sl_pct", default_num=2.0)
@@ -119,6 +139,9 @@ db_order_idr = get_setting("order_idr", default_num=50000.0)
 db_sim_balance = get_setting("sim_balance", default_num=10000000.0)
 db_refresh_rate = int(get_setting("refresh_rate", default_num=5.0))
 db_mode = get_setting("bot_mode", default_text="Demo (Simulasi)")
+
+if "last_signal" not in st.session_state: 
+    st.session_state.last_signal = int(get_setting("last_signal", default_num=0.0))
 
 # ==========================================
 # MENU INPUT PARAMETER (SIDEBAR HP)
@@ -136,25 +159,33 @@ if api_input != db_api: save_setting("api_key", text_val=api_input)
 if secret_input != db_secret: save_setting("secret_key", text_val=secret_input)
 
 if mode_input == "Demo (Simulasi)":
+    st.sidebar.subheader("🎮 Akun Uji Coba")
     sim_balance_input = st.sidebar.number_input("Modal Awal Demo (IDR)", min_value=10000.0, value=db_sim_balance, step=500000.0)
     if sim_balance_input != db_sim_balance: save_setting("sim_balance", num_val=sim_balance_input)
-else: sim_balance_input = db_sim_balance
+else:
+    sim_balance_input = db_sim_balance
 
+st.sidebar.subheader("💰 Jumlah Perdagangan")
 order_idr_input = st.sidebar.number_input("Jumlah Beli Per Sinyal (IDR)", min_value=10000.0, value=db_order_idr, step=5000.0)
 if order_idr_input != db_order_idr: save_setting("order_idr", num_val=order_idr_input)
 
 LIST_PAIRS = ["BTC/IDR", "ETH/IDR", "USDT/IDR", "SOL/IDR", "DOGE/IDR"]
 st.sidebar.info(f"📋 **Aset Dipantau Serentak:** {', '.join(LIST_PAIRS)}")
 
+st.sidebar.text(f"⏱️ Timeframe Terkunci: {TIMEFRAME.upper()}")
+st.sidebar.text(f"📊 Panjang Periode HMA: {HMA_LENGTH}")
+
 max_bars_input = st.sidebar.slider("Pembatasan Bar Tampilan", min_value=10, max_value=500, value=db_max_bars)
 if max_bars_input != db_max_bars: save_setting("max_bars", num_val=float(max_bars_input))
 
+st.sidebar.subheader("🛡️ Pembatasan Profit & Rugi")
 tp_pct_input = st.sidebar.number_input("Pelebaran Profit / TP (%)", min_value=0.1, value=db_tp_pct)
 if tp_pct_input != db_tp_pct: save_setting("tp_pct", num_val=tp_pct_input)
 
 sl_pct_input = st.sidebar.number_input("Stop Loss / SL (%)", min_value=0.1, value=db_sl_pct)
 if sl_pct_input != db_sl_pct: save_setting("sl_pct", num_val=sl_pct_input)
 
+st.sidebar.subheader("⏱️ Sinkronisasi & Pembersihan")
 refresh_rate_input = st.sidebar.slider("Jeda Auto-Refresh (Detik)", min_value=1, max_value=60, value=db_refresh_rate)
 if refresh_rate_input != db_refresh_rate: save_setting("refresh_rate", num_val=float(refresh_rate_input))
 
@@ -204,7 +235,6 @@ def market_monitor_fragment():
         st.info(f"🎮 **Dompet Demo IDR Anda:** **Rp {current_sim_balance:,.0f}**")
         saldo_idr_tersedia = current_sim_balance
 
-    # Pilihan koin untuk digambar grafiknya di layar HP agar tidak bertumpuk
     st.write("---")
     pair_grafik = st.selectbox("🎯 Pilih Grafik Candlestick Aset yang Mau Dilihat:", LIST_PAIRS, index=0)
 
@@ -224,22 +254,29 @@ def market_monitor_fragment():
             
             current_hma = df['hma'].iloc[-1]
             prev_hma = df['hma'].iloc[-2]
-            prev_prev_hma = df['hma'].iloc[-3]
             current_close = df['close'].iloc[-1]
             
             is_green = current_hma >= prev_hma
-            is_green_prev = prev_hma >= prev_prev_hma
+            is_green_prev = df['hma'].iloc[-2] >= df['hma'].iloc[-3]
             
             raw_buy = is_green and not is_green_prev
             raw_sell = not is_green and is_green_prev
             
-            # AMBIL DATA RUNNING TRADES KHUSUS PAIR INI
+            # BACA DATA RUNNING TRADES KHUSUS PAIR INI
             history_conn = sqlite3.connect('trading_bot.db')
             target_status = 'LIVE_OPEN' if mode_input == "Live Trading Real" else 'DEMO_OPEN'
             active_trades = pd.read_sql_query(f"SELECT * FROM trades WHERE status='{target_status}' AND pair='{pair}'", history_conn)
             history_conn.close()
 
-            # ─── PENGUNCI PROFIT & PELINDUNG SINYAL PALSU (ANTI REPAINT) ───
+            if mode_input == "Live Trading Real" and api_input and secret_input:
+                try:
+                    s_coin = balance['free'][coin_name] if coin_name in balance['free'] else 0.0
+                    if s_coin > 0: st.write(f"🪙 Saldo {coin_name} Real: `{s_coin:.8f}`")
+                except: pass
+            else:
+                if current_sim_coin > 0: st.write(f"🎮 Saldo {coin_name} Demo: `{current_sim_coin:.8f}`")
+
+            # PENGUNCI PROFIT & PELINDUNG SINYAL PALSU (ANTI REPAINT)
             if not active_trades.empty:
                 for idx, row in active_trades.iterrows():
                     trade_id = row['id']
@@ -288,7 +325,7 @@ def market_monitor_fragment():
                     if highest_so_far > row['highest_price']:
                         update_active_trade(trade_id, highest_so_far, row['status'])
 
-            # ─── SAKELAR EKSEKUSI UTAMA (ANTI BELI BERUNTUN SEJENIS) ───
+            # SAKELAR EKSEKUSI UTAMA (ANTI BELI BERUNTUN SEJENIS)
             if raw_buy and last_signal_pair != 1:
                 nominal_belanja = min(order_idr_input, saldo_idr_tersedia)
                 if nominal_belanja >= 10000:
@@ -311,21 +348,18 @@ def market_monitor_fragment():
                     st.toast(f"🟩 {pair} INSTAN BUY BERHASIL!", icon="🛒")
                     st.rerun()
 
-            # ─── BARU: LOGIKA GAMBAR VISUAL CANDLESTICK KHUSUS PAIR YANG DIPILIH ───
+            # LOGIKA GAMBAR VISUAL CANDLESTICK
             if pair == pair_grafik:
                 st.write(f"📈 **Harga {pair} Sekarang:** Rp {current_close:,.0f}")
                 
-                # Buat kerangka grafik candlestick interaktif
                 fig = go.Figure()
                 fig.add_trace(go.Candlestick(
                     x=df['datetime'], open=df['open'], high=df['high'], low=df['low'], close=df['close'],
                     name="Candlestick", increasing_line_color='green', decreasing_line_color='red'
                 ))
-                # Tambahkan garis HHMA dinamis berwarna
                 line_color = 'green' if is_green else 'red'
                 fig.add_trace(go.Scatter(x=df['datetime'], y=df['hma'], line=dict(color=line_color, width=2.5), name="Garis HHMA"))
                 
-                # BARU: Tempelkan Tanda Panah Panah BUY / SELL pas melekat di titik harga balok berjalan
                 if raw_buy:
                     fig.add_annotation(x=df['datetime'].iloc[-1], y=df['low'].iloc[-1], text="▲ BUY", showarrow=False, yshift=-15, font=dict(color="green", size=14))
                 elif raw_sell:
@@ -337,7 +371,7 @@ def market_monitor_fragment():
         except Exception as e:
             pass
 
-    # 3. MENAMPILKAN TABEL RUNNING MULTI-PAIR TERPADU
+    # MENAMPILKAN TABEL RUNNING MULTI-PAIR TERPADU
     st.subheader("📊 Tabel Running (Multi-Pair Terbuka)")
     h_conn = sqlite3.connect('trading_bot.db')
     t_status = 'LIVE_OPEN' if mode_input == "Live Trading Real" else 'DEMO_OPEN'
@@ -373,7 +407,7 @@ if total_closed > 0:
     for idx, row_closed in closed_trades.iterrows():
         match_buy = all_buys[(all_buys['id'] > row_closed['id']) & (all_buys['pair'] == row_closed['pair'])].head(1)
         if not match_buy.empty:
-            harga_beli = match_buy['price'].values
+            harga_beli = match_buy['price'].values[0]
             harga_jual = row_closed['price']
             banyak_koin = row_closed['amount']
             
