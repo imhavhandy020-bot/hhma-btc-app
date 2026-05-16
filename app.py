@@ -9,7 +9,7 @@ import urllib.parse
 from datetime import datetime
 
 # ==============================================================================
-# 1. KONFIGURASI LAYAR & SIDEBAR HP (ANTI-RESET SESSION)
+# 1. KONFIGURASI LAYAR & SIDEBAR HP (ANTI-RESET SESSION STATE)
 # ==============================================================================
 st.set_page_config(page_title="Indodax Pro Bot", layout="wide", initial_sidebar_state="collapsed")
 
@@ -31,8 +31,13 @@ st.sidebar.markdown("---")
 if "modal_trade" not in st.session_state:
     st.session_state.modal_trade = 50000
 if "min_vol" not in st.session_state:
-    st.session_state.min_vol = 50000000  # Default dikunci ke 50.000.000 sesuai permintaan
+    st.session_state.min_vol = 50000000
+if "api_key" not in st.session_state:
+    st.session_state.api_key = ""
+if "api_secret" not in st.session_state:
+    st.session_state.api_secret = ""
 
+# Input Parameter Utama
 modal_per_trade = st.sidebar.number_input(
     "Modal per Transaksi (IDR)", 
     min_value=10000, 
@@ -51,9 +56,22 @@ min_volume_24h = st.sidebar.number_input(
 )
 st.session_state.min_vol = min_volume_24h
 
-# Input API Key Riil untuk Penarikan Saldo
-api_key_input = st.sidebar.text_input("Indodax API Key", value="", type="password", help="Masukkan API Key dari akun Indodax Anda")
-api_secret_input = st.sidebar.text_input("Indodax Secret Key", value="", type="password", help="Masukkan Secret Key dari akun Indodax Anda")
+# INPUT API KEY SECURE & PERMANEN (Tidak akan hilang saat refresh)
+api_key_input = st.sidebar.text_input(
+    "Indodax API Key", 
+    value=st.session_state.api_key, 
+    type="password",
+    key="api_key_storage"
+)
+st.session_state.api_key = api_key_input
+
+api_secret_input = st.sidebar.text_input(
+    "Indodax Secret Key", 
+    value=st.session_state.api_secret, 
+    type="password",
+    key="api_secret_storage"
+)
+st.session_state.api_secret = api_secret_input
 
 # ==============================================================================
 # 2. INISIALISASI DATABASE & MANAJEMEN KONEKSI AMAN
@@ -131,38 +149,39 @@ def update_position(pair, status, buy_price, amount):
         pass
 
 # ==============================================================================
-# 3. ENGINE KONEKSI API RIIL INDODAX (GET BALANCE RIIL)
+# 3. KONEKSI PRIVATE API RIIL INDODAX (GET REAL BALANCE)
 # ==============================================================================
 def fetch_indodax_real_balance(api_key, api_secret):
-    """Mengambil saldo rupiah riil langsung dari akun Indodax Anda via Private API"""
     if not api_key or not api_secret:
-        return 0.0, "API Key Kosong (Simulasi Aktif)"
+        return 1500000.0, "Simulasi Aktif (Isi API Key)"
         
     try:
-        # Pembuatan payload tanda tangan resmi sesuai dokumentasi Indodax Private RestAPI
+        # Standard Penulisan Nonce & Tanda Tangan Enkripsi Sesuai API Indodax
         payload = {
             'method': 'getInfo',
-            'timestamp': int(time.time() * 1000)
+            'nonce': int(time.time() * 1000)
         }
         post_data = urllib.parse.urlencode(payload)
         sign = hmac.new(api_secret.encode('utf-8'), post_data.encode('utf-8'), hashlib.sha512).hexdigest()
         
         headers = {
             'Sign': sign,
-            'Key': api_key
+            'Key': api_key,
+            'Content-Type': 'application/x-www-form-urlencoded'
         }
         
-        response = requests.post("https://indodax.com", data=payload, headers=headers, timeout=10).json()
+        response = requests.post("https://indodax.com/tapi", data=payload, headers=headers, timeout=10).json()
         
         if response.get('success') == 1:
-            # Mengambil saldo utama dalam bentuk Rupiah (IDR)
             balances = response['return']['balance']
             idr_balance = float(balances.get('idr', 0))
             return idr_balance, "Koneksi Riil Sukses"
         else:
-            return 0.0, f"Gagal API: {response.get('error', 'Kunci Salah')}"
+            # Mengembalikan pesan error spesifik jika ditolak bursa Indodax
+            error_msg = response.get('error', 'Akses Ditolak')
+            return 0.0, f"Gagal: {error_msg}"
     except Exception as e:
-        return 0.0, f"Error Link: {str(e)}"
+        return 0.0, "Error Jaringan API"
 
 # ==============================================================================
 # 4. KONEKSI DATA CHART BINANCE GLOBAL & OPTIMASI LOGIKA HMA-20
@@ -213,12 +232,8 @@ def fetch_binance_4h_signals(pair):
 # ==============================================================================
 st.title("📊 Multi-Pair Pro Monitor")
 
-# Panggil fungsi saldo riil Indodax
-saldo_idr_dompet, status_api_pesan = fetch_indodax_real_balance(api_key_input, api_secret_input)
-
-# Jika API belum diisi, gunakan fallback simulasi agar bot tidak Rp0 total saat kosong
-if "API Kosong" in status_api_pesan:
-    saldo_idr_dompet = 1500000.0
+# Memuat Saldo Menggunakan State API Key Yang Terkunci
+saldo_idr_dompet, status_api_pesan = fetch_indodax_real_balance(st.session_state.api_key, st.session_state.api_secret)
 
 col1, col2, col3 = st.columns(3)
 win_rate_sim = 68.5 
@@ -234,7 +249,7 @@ with col3:
 
 st.markdown("---")
 
-# Jalankan Logika Otomatisasi Rem Saldo
+# Eksekusi Logika Otomatisasi
 df_positions = get_positions()
 
 if not df_positions.empty and "Aset" in df_positions.columns:
@@ -244,7 +259,6 @@ if not df_positions.empty and "Aset" in df_positions.columns:
         
         signal, target_price, vol_24h = fetch_binance_4h_signals(pair)
         
-        # Cek Filter Volume 24 Jam
         if vol_24h < min_volume_24h and signal != "ERROR":
             continue
             
@@ -263,13 +277,13 @@ if not df_positions.empty and "Aset" in df_positions.columns:
             update_position(pair, 'WAITING_BUY', 0.0, 0.0)
             add_log(pair, 'SELL', f"Menjual seluruh aset ekivalen Rp{payout:,.0f} pada harga Rp{target_price:,.2f}")
 
-# Menampilkan tabel data akhir monitor HP
+# Menampilkan tabel data monitor HP
 st.subheader("📌 Status Posisi 5 Aset Permanen")
 st.table(get_positions())
 
 st.subheader("📜 Log Aktivitas Server")
 st.table(get_logs())
 
-# Autorefresh aman untuk layar HP Chrome
+# Autorefresh aman (5 Detik) agar data tidak saling mengunci
 time.sleep(5)
 st.rerun()
