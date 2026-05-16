@@ -14,7 +14,8 @@ from datetime import datetime
 API_KEY = "KXFCXMGP-HXH2UXNK-9T1KRVO0-XCEZBKRR-HCIDLBUF"
 SECRET_KEY = "a423ce71c0c54f54899d0c03193865176b0b5d83b7826f51c3eea4b269ea553ed0087e69ac200d48"
 
-LIST_PAIRS = ['BTC/IDR', 'ETH/IDR', 'USDT/IDR', 'SOL/IDR', 'DOGE/IDR']
+# Daftar Koin Sesuai Request Mutlak Anda (USD disesuaikan ke USDT/IDR)
+LIST_PAIRS = ['BTC/IDR', 'ETH/IDR', 'USDT/IDR', 'DOGE/IDR', 'SOL/IDR']
 MODAL_PER_TRANSAKSI_IDR = 50000.0  # nominal modal Rp 50.000 per transaksi BUY
 
 # =====================================================================
@@ -62,17 +63,19 @@ def add_log_message(message):
         cursor = db_conn.cursor()
         now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         cursor.execute("INSERT INTO activity_logs (timestamp, message) VALUES (?, ?)", (now_str, message))
-        cursor.execute("DELETE FROM activity_logs WHERE id NOT IN (SELECT id FROM activity_logs ORDER BY id DESC LIMIT 15)")
+        # Log muat lebih banyak baris (30 baris) karena dipisah masing-masing per koin
+        cursor.execute("DELETE FROM activity_logs WHERE id NOT IN (SELECT id FROM activity_logs ORDER BY id DESC LIMIT 30)")
         db_conn.commit()
     except:
         pass
 
 # =====================================================================
-# 3. PENARIK DATA GRAFIK JALUR GLOBAL BINANCE (OPTIMASI KECEPATAN TINGGI)
+# 3. PENARIK DATA GRAFIK JALUR GLOBAL BINANCE (100% TERISOLASI)
 # =====================================================================
 def get_indodax_candles_4h(pair):
-    """Mengambil riwayat lilin 4 jam lewat API Global Binance tanpa bug list string"""
+    """Mengambil riwayat lilin 4 jam lewat API Global Binance dengan string murni"""
     try:
+        # Pemotongan string bersih penentu nama koin internasional
         clean_coin = pair.upper().replace("/IDR", "")
         
         if clean_coin == "USDT":
@@ -81,11 +84,7 @@ def get_indodax_candles_4h(pair):
             binance_symbol = f"{clean_coin}USDT"
             
         url = "https://binance.com"
-        params = {
-            'symbol': binance_symbol,
-            'interval': '4h',
-            'limit': 50  # Dikurangi ke 50 bar agar proses download super cepat dalam hitungan milidetik
-        }
+        params = {'symbol': binance_symbol, 'interval': '4h', 'limit': 50}
         
         response = requests.get(url, params=params, timeout=3)
         data = response.json()
@@ -167,7 +166,7 @@ def execute_indodax_trade(pair, action, amount_or_coin):
         return {"success": 0, "error": "Timeout"}
 
 # =====================================================================
-# 5. INTEGRASI ENGINE UTAMA HIGH-SPEED
+# 5. ENGINE UTAMA: PEMINDAIAN MANDIRI DAN LOG TERPISAH PER KOIN
 # =====================================================================
 def run_autonomous_engine():
     cursor = db_conn.cursor()
@@ -179,21 +178,25 @@ def run_autonomous_engine():
     cursor.execute("UPDATE settings SET last_run = ?", (now_str,))
     db_conn.commit()
     
-    log_summary = []
     saldo_saat_ini = get_indodax_balance()
     
+    # PERBAIKAN: Setiap koin diproses terisolasi total dalam antrean mandiri
     for pair in LIST_PAIRS:
         df = get_indodax_candles_4h(pair)
+        
+        # JIKA KOIN INI GAGAL, CATAT KHUSUS KOIN INI DAN LANJUTKAN KOIN BERIKUTNYA
         if df.empty: 
-            log_summary.append(f"{pair}: Jaringan Gagal")
+            add_log_message(f"🔍 {pair} | Status: ❌ Jaringan Gagal")
             continue
             
         df = calculate_hma_20(df)
-        if 'hma_value' not in df.columns: continue
+        if 'hma_value' not in df.columns: 
+            add_log_message(f"🔍 {pair} | Status: ⚠️ Eror Kalkulator HMA")
+            continue
         
         last_bar = df.iloc[-1]
         confirmed_bar = df.iloc[-2]
-        current_color = "Green" if last_bar['is_green'] else "Red"
+        current_color = "Hijau (BUY)" if last_bar['is_green'] else "Merah (SELL)"
         
         indodax_price = get_live_market_price(pair)
         if indodax_price is None: indodax_price = last_bar['close']
@@ -201,19 +204,20 @@ def run_autonomous_engine():
         current_volume_idr = last_bar['volume'] * indodax_price
         
         if current_volume_idr < min_vol: 
-            log_summary.append(f"{pair}: Skip Vol")
+            add_log_message(f"🔍 {pair} | Tren: {current_color} | Status: ⏩ Skip Volume Rendah")
             continue
             
         cursor.execute("SELECT last_signal, holding_amount FROM trades WHERE pair = ?", (pair,))
         row = cursor.fetchone()
         last_signal, holding_amount = row if row else ("NONE", 0.0)
         
-        log_summary.append(f"{pair}:{current_color}")
+        # Cetak log rutin per masing-masing baris koin secara terpisah
+        add_log_message(f"🔍 {pair} | Tren: {current_color} | Posisi Aktif: {last_signal}")
         
-        # BUY
+        # PROSES TRADING BUY
         if confirmed_bar['raw_buy'] and last_signal != 'BUY':
             if saldo_saat_ini < MODAL_PER_TRANSAKSI_IDR:
-                add_log_message(f"⚠️ SKIP BUY {pair}: Saldo Dompet Kurang.")
+                add_log_message(f"⚠️ {pair} | Sinyal: BUY | Status: 🛑 Dibatalkan (Saldo Dompet Kurang)")
                 continue
             res = execute_indodax_trade(pair, "buy", MODAL_PER_TRANSAKSI_IDR)
             if res.get("success") == 1:
@@ -222,10 +226,10 @@ def run_autonomous_engine():
                 cursor.execute("INSERT OR REPLACE INTO trades VALUES (?, 'BUY', ?, ?, ?)", (pair, indodax_price, now_str, coin_bought))
                 cursor.execute("INSERT INTO history (pair, type, price, status, timestamp) VALUES (?, 'BUY', ?, 'SUCCESS', ?)", (pair, indodax_price, now_str))
                 db_conn.commit()
-                add_log_message(f"🚀 BUY SUKSES: {pair}")
+                add_log_message(f"🚀 {pair} | Aksi: Eksekusi BUY Berhasil di Rp {indodax_price:,.0f}")
                 saldo_saat_ini -= MODAL_PER_TRANSAKSI_IDR
                 
-        # SELL
+        # PROSES TRADING SELL
         elif confirmed_bar['raw_sell'] and last_signal == 'BUY':
             coin_to_sell = holding_amount if holding_amount > 0 else (MODAL_PER_TRANSAKSI_IDR / indodax_price)
             res = execute_indodax_trade(pair, "sell", coin_to_sell)
@@ -233,12 +237,10 @@ def run_autonomous_engine():
                 cursor.execute("INSERT OR REPLACE INTO trades VALUES (?, 'SELL', ?, ?, 0.0)", (pair, indodax_price, now_str))
                 cursor.execute("INSERT INTO history (pair, type, price, status, timestamp) VALUES (?, 'SELL', ?, 'SUCCESS', ?)", (pair, indodax_price, now_str))
                 db_conn.commit()
-                add_log_message(f"📉 SELL SUKSES: {pair}")
-
-    add_log_message("Scan Selesai | " + " | ".join(log_summary))
+                add_log_message(f"📉 {pair} | Aksi: Eksekusi SELL Berhasil di Rp {indodax_price:,.0f}")
 
 # =====================================================================
-# 6. LAYAR monitor CHROME HP
+# 6. LAYAR UTAMA DASHBOARD MONITOR (RESPONSIVE CHROME HP)
 # =====================================================================
 cursor = db_conn.cursor()
 cursor.execute("SELECT COUNT(*) FROM history WHERE type='SELL' AND status='SUCCESS'")
@@ -267,7 +269,7 @@ try:
         
         if row and str(row[0]) == 'BUY':
             entry_price = float(row[1])
-            holding_amount = float(row[2])
+            holding_amount = float(row[4])
             posisi = "🛒 BUYING"
             if live_price is None: live_price = entry_price
             current_value_idr = holding_amount * live_price
@@ -313,25 +315,39 @@ st.markdown("---")
 col_bal, col_pnl = st.columns(2)
 col_bal.metric("Saldo Utama IDR (Dompet)", f"Rp {saldo_idr_dompet:,.0f}")
 if akumulasi_pnl_idr >= 0:
-    st.metric("Total Profit Gabungan", f"+{total_pnl_pct:.2f}%", delta=f"Rp {akumulasi_pnl_idr:,.0f}")
+    col_pnl.metric("Total Profit Gabungan", f"+{total_pnl_pct:.2f}%", delta=f"Rp {akumulasi_pnl_idr:,.0f}")
 else:
-    st.metric("Total Loss Gabungan", f"{total_pnl_pct:.2f}%", delta=f"Rp {akumulasi_pnl_idr:,.0f}")
+    col_pnl.metric("Total Loss Gabungan", f"{total_pnl_pct:.2f}%", delta=f"Rp {akumulasi_pnl_idr:,.0f}")
 st.markdown("---")
 
 st.markdown("#### 📋 Status Posisi Semua Aset Aktif")
 if live_data:
     st.dataframe(pd.DataFrame(live_data), use_container_width=True, hide_index=True)
 
-st.markdown("#### 📜 Log Aktivitas Server Cloud")
+# SEKARANG TAMPILAN LOG MENJADI BERBARIS RAPI PER KOIN MASING-MASING
+st.markdown("#### 📜 Log Aktivitas Server Terpisah (Per Koin)")
 try:
-    df_logs = pd.read_sql_query("SELECT timestamp as 'Waktu', message as 'Catatan Aktivitas' FROM activity_logs ORDER BY id DESC LIMIT 15", db_conn)
+    df_logs = pd.read_sql_query("SELECT timestamp as 'Waktu', message as 'Catatan Aktivitas' FROM activity_logs ORDER BY id DESC LIMIT 20", db_conn)
     st.dataframe(df_logs, use_container_width=True, hide_index=True)
 except:
-    st.write("🔄 *Gagal memuat log.*")
+    st.write("🔄 *Gagal memuat log aktivitas.*")
+
+st.sidebar.header("⚙️ Manajemen Risiko")
+cursor.execute("SELECT max_mdd, min_vol FROM settings LIMIT 1")
+curr_set = cursor.fetchone()
+curr_mdd, curr_vol = curr_set[:2] if curr_set else (5.0, 50000000)
+
+input_mdd = st.sidebar.number_input("Max Drawdown Harian (%)", value=curr_mdd, step=0.5)
+input_vol = st.sidebar.number_input("Min Volume 24J (IDR)", value=int(curr_vol), step=5000000)
+
+if st.sidebar.button("💾 Terapkan Batas Risiko"):
+    cursor.execute("UPDATE settings SET max_mdd = ?, min_vol = ?", (input_mdd, input_vol))
+    db_conn.commit()
+    st.sidebar.success("Parameter risiko tersimpan ke Cloud!")
 
 # =====================================================================
-# INTERVAL PENGEREM KECEPATAN MAKSIMAL AMAN SERVER CLOUD (5 DETIK)
+# INTERVAL AUTOREFRESH TINGGI CLOUD (5 DETIK)
 # =====================================================================
 run_autonomous_engine()
-time.sleep(5)  # Detak jantung bot disetel setiap 5 detik sekali (High-Speed)
+time.sleep(5)
 st.rerun()
